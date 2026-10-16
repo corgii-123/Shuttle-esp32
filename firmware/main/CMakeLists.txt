@@ -1099,10 +1099,10 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 set(MAIN_PRIV_REQUIRES_EXTRA "")
-# SHUTTLE: board glue code depends on the shuttle component (extra_components/shuttle)
-if(CONFIG_BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2)
-    list(APPEND MAIN_PRIV_REQUIRES_EXTRA shuttle)
-endif()
+# SHUTTLE: board glue code depends on the shuttle component (extra_components/shuttle).
+# Unconditional: requirements are expanded before sdkconfig values are known. The
+# component's hooks are only enabled for the Shuttle board (SHUTTLE_ENABLE depends on it).
+list(APPEND MAIN_PRIV_REQUIRES_EXTRA shuttle)
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET AND CONFIG_XIAOZHI_ETH_PHY_IP101)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif__ip101)
 endif()

@@ -2,6 +2,7 @@ menu "Shuttle (搞快)"
 
 config SHUTTLE_ENABLE
     bool "Enable Shuttle extensions"
+    depends on BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2
     default y
     help
         Enables the Shuttle hooks inside xiaozhi's application.cc (forced WebSocket
