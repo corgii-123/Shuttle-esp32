@@ -1,0 +1,132 @@
+menu "Shuttle (搞快)"
+
+config SHUTTLE_ENABLE
+    bool "Enable Shuttle extensions"
+    default y
+    help
+        Enables the Shuttle hooks inside xiaozhi's application.cc (forced WebSocket
+        protocol + "shuttle" JSON messages). Only has effect with the Shuttle board.
+
+menu "Server"
+
+config SHUTTLE_SERVER_URL
+    string "Server base URL (wss://host[:port] or ws://host:port)"
+    default "wss://shuttle.example.com"
+    help
+        Base URL of the Mac server (normally the Cloudflare Tunnel hostname).
+        The firmware derives:
+          <base>/ws/ctrl         xiaozhi-compatible voice/control channel
+          <base>/ws/adb          ADB byte pass-through
+          http(s)://<host>/xiaozhi/ota/  xiaozhi OTA/config endpoint
+        Do not add a trailing slash.
+
+config SHUTTLE_TOKEN
+    string "Pre-shared token"
+    default "change-me"
+    help
+        Sent as "Authorization: Bearer <token>" on every WebSocket handshake.
+        Must match server config.yaml -> auth.token.
+
+config SHUTTLE_SKIP_OTA_CHECK
+    bool "Skip xiaozhi OTA/version check at boot"
+    default n
+    help
+        When enabled, the device does not call <base>/xiaozhi/ota/ at boot (no time
+        sync, no remote firmware upgrade). The WebSocket URL/token from Kconfig are
+        used directly. Useful if the server is often unreachable at boot.
+
+endmenu
+
+menu "Wi-Fi networks (priority order: 1 = highest)"
+
+config SHUTTLE_WIFI1_SSID
+    string "Wi-Fi #1 SSID (phone hotspot recommended)"
+    default ""
+config SHUTTLE_WIFI1_PASSWORD
+    string "Wi-Fi #1 password"
+    default ""
+config SHUTTLE_WIFI1_PHONE_HOST
+    string "Wi-Fi #1 phone ADB host (empty = DHCP gateway)"
+    default ""
+    help
+        Address of the Android phone on this network. Leave empty when this SSID
+        is the phone's own hotspot: the DHCP gateway is the phone.
+
+config SHUTTLE_WIFI2_SSID
+    string "Wi-Fi #2 SSID (e.g. home Wi-Fi)"
+    default ""
+config SHUTTLE_WIFI2_PASSWORD
+    string "Wi-Fi #2 password"
+    default ""
+config SHUTTLE_WIFI2_PHONE_HOST
+    string "Wi-Fi #2 phone ADB host (empty = DHCP gateway)"
+    default ""
+    help
+        On a home router the gateway is NOT the phone: put the phone's (static or
+        DHCP-reserved) IP here, or "none" to disable the ADB bridge on this network.
+
+config SHUTTLE_WIFI3_SSID
+    string "Wi-Fi #3 SSID"
+    default ""
+config SHUTTLE_WIFI3_PASSWORD
+    string "Wi-Fi #3 password"
+    default ""
+config SHUTTLE_WIFI3_PHONE_HOST
+    string "Wi-Fi #3 phone ADB host (empty = DHCP gateway)"
+    default ""
+
+config SHUTTLE_WIFI_TIER_TIMEOUT_S
+    int "Seconds to try higher-priority networks before falling back"
+    range 5 120
+    default 20
+
+config SHUTTLE_WIFI_ROAM_INTERVAL_S
+    int "Re-try higher-priority networks every N seconds while idle (0 = never)"
+    range 0 86400
+    default 300
+
+endmenu
+
+menu "ADB bridge"
+
+config SHUTTLE_ADB_BRIDGE_ENABLE
+    bool "Enable ADB TCP <-> WebSocket bridge"
+    default y
+
+config SHUTTLE_ADB_PHONE_PORT
+    int "Phone adbd TCP port (adb tcpip <port>)"
+    range 1 65535
+    default 5555
+
+config SHUTTLE_ADB_RX_BUFFER_KB
+    int "WebSocket->phone stream buffer (KB, allocated in PSRAM)"
+    range 16 2048
+    default 256
+
+config SHUTTLE_ADB_TX_CHUNK_KB
+    int "phone->WebSocket read chunk (KB, allocated in PSRAM)"
+    range 2 128
+    default 16
+
+config SHUTTLE_ADB_WS_BUFFER_SIZE
+    int "esp_websocket_client rx/tx buffer size (bytes)"
+    range 1024 65536
+    default 8192
+
+config SHUTTLE_BACKOFF_MIN_MS
+    int "Reconnect backoff minimum (ms)"
+    default 1000
+config SHUTTLE_BACKOFF_MAX_MS
+    int "Reconnect backoff maximum (ms)"
+    default 30000
+
+config SHUTTLE_ADB_PING_INTERVAL_S
+    int "WebSocket ping interval (s)"
+    default 10
+config SHUTTLE_ADB_PONG_TIMEOUT_S
+    int "WebSocket pong timeout before reconnect (s)"
+    default 30
+
+endmenu
+
+endmenu

@@ -1,0 +1,17 @@
+# --- firmware private settings / generated ---
+firmware/shuttle.local.conf
+firmware/main/boards/shuttle/epaper-1.54-v2/config.local.json
+
+# --- server ---
+server/config.yaml
+server/.venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+logs/
+*.log
+
+# --- misc ---
+.DS_Store
+.env

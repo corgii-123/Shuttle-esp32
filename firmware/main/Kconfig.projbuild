@@ -437,6 +437,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_SEEED_STUDIO_SENSECAP_WATCHER
         bool "Seeed Studio SenseCAP Watcher"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2
+        bool "Shuttle (Waveshare ESP32-S3-ePaper-1.54 V2 + ADB bridge)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
         bool "Spotpear ESP32-S3 1.28 Box"
         depends on IDF_TARGET_ESP32S3

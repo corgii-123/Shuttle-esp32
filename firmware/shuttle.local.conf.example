@@ -1,0 +1,19 @@
+# Copy to shuttle.local.conf (git-ignored) and fill in. sdkconfig syntax: strings in quotes.
+# Everything here can also be set via `idf.py menuconfig` -> Component config -> Shuttle (搞快).
+CONFIG_SHUTTLE_SERVER_URL="wss://shuttle.example.com"
+CONFIG_SHUTTLE_TOKEN="change-me-to-a-long-random-string"
+
+# Priority 1: the phone hotspot (2.4 GHz!). Phone = DHCP gateway, so leave PHONE_HOST empty.
+CONFIG_SHUTTLE_WIFI1_SSID="MyPhoneHotspot"
+CONFIG_SHUTTLE_WIFI1_PASSWORD="hotspot-password"
+CONFIG_SHUTTLE_WIFI1_PHONE_HOST=""
+
+# Priority 2: home Wi-Fi. The gateway is the router, so give the phone's LAN IP or "none".
+CONFIG_SHUTTLE_WIFI2_SSID="HomeWiFi"
+CONFIG_SHUTTLE_WIFI2_PASSWORD="home-password"
+CONFIG_SHUTTLE_WIFI2_PHONE_HOST="none"
+
+# Optional tuning
+# CONFIG_SHUTTLE_SKIP_OTA_CHECK=y
+# CONFIG_SHUTTLE_WIFI_ROAM_INTERVAL_S=300
+# CONFIG_SHUTTLE_ADB_RX_BUFFER_KB=256

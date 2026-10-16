@@ -22,6 +22,11 @@
 
 #define TAG "Application"
 
+#if CONFIG_SHUTTLE_ENABLE
+// SHUTTLE: implemented in main/boards/shuttle/*; handles Shuttle-specific server messages.
+bool ShuttleHandleIncomingJson(const cJSON* root);
+#endif
+
 Application::Application() : notify_player_(audio_service_) {
     event_group_ = xEventGroupCreate();
 
@@ -383,7 +388,12 @@ void Application::ActivationTask() {
     CheckAssetsVersion();
 
     // Check for new firmware version
+#if CONFIG_SHUTTLE_SKIP_OTA_CHECK
+    // SHUTTLE: server address/token come from Kconfig, OTA check is optional.
+    ota_->MarkCurrentVersionValid();
+#else
     CheckNewVersion();
+#endif
 
     // Initialize the protocol
     InitializeProtocol();
@@ -548,6 +558,13 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
+#if CONFIG_SHUTTLE_ENABLE
+    // SHUTTLE: always use WebSocket (URL/token provisioned from Kconfig), even when
+    // the OTA check failed, so a temporarily unreachable server does not force MQTT.
+    if (true) {
+        protocol_ = std::make_unique<WebsocketProtocol>();
+    } else
+#endif
     if (ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota_->HasWebsocketConfig()) {
@@ -731,6 +748,11 @@ void Application::InitializeProtocol() {
             }
 #endif
         } else {
+#if CONFIG_SHUTTLE_ENABLE
+            if (ShuttleHandleIncomingJson(root)) {
+                return;
+            }
+#endif
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }
     });

@@ -1,0 +1,64 @@
+name: Firmware
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build shuttle-epaper-1.54-v2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Optional: put your real values in repository secrets to get a ready-to-flash bin.
+      # Without them the firmware uses the Kconfig placeholders (wss://shuttle.example.com).
+      # NOTE: artifacts are visible to anyone with read access to this repository.
+      - name: Write private settings from secrets (optional)
+        env:
+          SHUTTLE_SERVER_URL: ${{ secrets.SHUTTLE_SERVER_URL }}
+          SHUTTLE_TOKEN: ${{ secrets.SHUTTLE_TOKEN }}
+          SHUTTLE_WIFI1_SSID: ${{ secrets.SHUTTLE_WIFI1_SSID }}
+          SHUTTLE_WIFI1_PASSWORD: ${{ secrets.SHUTTLE_WIFI1_PASSWORD }}
+          SHUTTLE_WIFI2_SSID: ${{ secrets.SHUTTLE_WIFI2_SSID }}
+          SHUTTLE_WIFI2_PASSWORD: ${{ secrets.SHUTTLE_WIFI2_PASSWORD }}
+          SHUTTLE_WIFI2_PHONE_HOST: ${{ secrets.SHUTTLE_WIFI2_PHONE_HOST }}
+        run: |
+          python3 firmware/build_shuttle.py --dry-run --conf /nonexistent
+          # Persist the generated config for the build step (runs in another container).
+          ls -l firmware/main/boards/shuttle/epaper-1.54-v2/config.local.json
+
+      - name: Build with ESP-IDF v6.1
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32s3
+          path: firmware
+          command: >-
+            python scripts/build.py shuttle/epaper-1.54-v2 -c config.local.json
+            --name shuttle-epaper-1.54-v2 --language zh-CN
+
+      - name: Collect binaries
+        run: |
+          mkdir -p out
+          cd firmware/build
+          sudo cp merged-binary.bin bootloader/bootloader.bin partition_table/partition-table.bin \
+            ota_data_initial.bin xiaozhi.bin flasher_args.json ../../out/ 2>/dev/null || true
+          sudo cp generated_assets.bin ../../out/ 2>/dev/null || true
+          ls -l ../../out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shuttle-firmware-${{ github.sha }}
+          path: out/
+          if-no-files-found: error

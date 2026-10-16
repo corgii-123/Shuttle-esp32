@@ -1,0 +1,4 @@
+## Shuttle component dependencies (resolved by the IDF Component Manager)
+dependencies:
+  idf: '>=6.0.1'
+  espressif/esp_websocket_client: '^1.8.0'

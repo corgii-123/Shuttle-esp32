@@ -1,0 +1,17 @@
+{
+    "manufacturer": "shuttle",
+    "type": "shuttle-epaper-1.54-v2",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "shuttle-epaper-1.54-v2",
+            "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2=y",
+                "CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/8m.csv\"",
+                "CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384",
+                "CONFIG_LWIP_TCP_WND_DEFAULT=16384"
+            ]
+        }
+    ]
+}
