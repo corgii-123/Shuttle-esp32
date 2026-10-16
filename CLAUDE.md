@@ -38,7 +38,7 @@ Protocol spec: `docs/protocol.md`. Setup: `docs/README.md`.
 | ├ `adb/phones.py` | `PhoneRegistry` (serial → name/last IP/last used, `phones.state_file`), `choose_host` policy | |
 | ├ `adb/phone.py` | `PhoneController`: screenshot (≤200 KB JPEG, short side 720), tap/swipe/text/back/home/dump_ui, coordinate scaling | |
 | ├ `pipeline/session.py` | `CtrlSession`: xiaozhi protocol, utterance → ASR → (phone commands) → agent → TTS, status pushes | |
-| ├ `pipeline/phone_commands.py` | "换手机" / "切换到X" / "哪台手机" / "关闭无线调试" + `/api/phones` actions | |
+| ├ `pipeline/phone_commands.py` | "换手机" / "切换到X" / "哪台手机" + `/api/phones` actions | |
 | ├ `pipeline/{asr,tts,agent}.py` | pluggable interfaces + Qwen/mock ASR, say/openai/command/mock TTS, simple/echo/command/python agents | |
 | └ `audio/` | ctypes libopus binding, PCM/WAV helpers | |
 | `server/phone_helper/` | optional on-phone helper (Java → dex, run via `app_process`): JPEG screenshots, clipboard for Chinese input | ours |
@@ -141,7 +141,7 @@ server/phone_helper/build.sh                    # optional helper jar (needs And
   boot (`ProvisionXiaozhiSettings`). The OTA reply must keep `"websocket": {}`.
 * The ctrl channel is opened on the first BOOT press (TLS takes ~1 s); afterwards the server's
   keepalive keeps it open for `voice.idle_close_s`.
-* `adb tcpip 5555` is lost on every phone reboot. `adb -s <ip>:5555 usb` (or the voice command
-  "关闭这台手机的无线调试") turns it off without a reboot.
+* `adb tcpip 5555` is lost on every phone reboot. `adb -s <ip>:5555 usb` turns it off without a reboot
+  (deliberately not a voice command: it can only be turned back on with a USB cable).
 * Switching phones keeps the adb serial `127.0.0.1:15555`; per-phone caches in `PhoneController`
   are dropped via `AdbTunnel.phone_generation`. A new phone shows "Allow USB debugging?" once.

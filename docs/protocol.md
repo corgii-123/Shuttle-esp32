@@ -97,7 +97,7 @@ remembers it in `phones.state_file` (serial → name, last IP + SSID, last used)
 4. the most recently used known phone
 5. the hotspot phone (gateway), the device's last phone, the first one found
 
-Hosts that were unreachable or whose wireless debugging was switched off are avoided for
+Hosts that were unreachable are avoided for
 `phones.avoid_after_fail_s`. Switching: the server sends `switch`, runs
 `adb disconnect 127.0.0.1:<port>` (so adb forgets the old phone's state) and closes with 4005; the
 device reconnects at once, the supervisor runs `adb connect` again and the new phone may ask
@@ -262,12 +262,11 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"x":360,"y":800}' http://127.0.0.1:8
 | `GET /api/phones` | – | `{"current":{"host","phone":{serial,name,model,…}},"candidates":[{"host","name","serial","current","hotspot"}],"known":[…],"pinned"}` |
 | `POST /api/phones/select` | `{"serial":"…"}` or `{"name":"小米"}` or `{"host":"192.168.1.77"}`, `"pin":true` | switch to that phone (409 + message if it is not around) |
 | `POST /api/phones/next` | – | next phone the device found ("换手机") |
-| `POST /api/phones/disable` | – | `adb usb` on the current phone (undoes `adb tcpip`), switch away |
 | `POST /api/phones/rescan` | – | ask the device to scan now |
 
 The same by voice (handled before the agent, see `pipeline/phone_commands.py`): "换手机" /
 "下一台手机", "切换到<名字>" (only names of known phones; "切换到飞行模式" still goes to the agent),
-"现在连的是哪台手机" / "有哪些手机", "关闭这台手机的无线调试" / "断开这台手机". Names come from the
+"现在连的是哪台手机" / "有哪些手机". Names come from the
 phone (`设置 → 关于手机 → 设备名称`, model) or `phones.aliases` in config.yaml.
 
 ## 5. `/health`

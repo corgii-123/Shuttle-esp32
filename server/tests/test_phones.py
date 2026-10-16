@@ -179,12 +179,7 @@ async def test_switching_between_phones(server_factory, fake_adb_env):
             await wait_for(lambda: tunnel.phone is not None and tunnel.phone.serial == "SER-A", 10)
             assert await say("打开设置", "dev-m") is None
             assert await say("切换到飞行模式", "dev-m") is None
-
-            # turn off wireless debugging on A: `adb usb`, then B is used
-            msg = await say("关闭这台手机的无线调试", "dev-m")
-            assert "无线调试" in msg
-            assert any(c[-1:] == ["usb"] for c in adb_calls(fake_adb_env))
-            await wait_for(lambda: tunnel.phone is not None and tunnel.phone.serial == "SER-B", 10)
+            assert await say("关闭无线调试", "dev-m") is None  # not ours: goes to the agent
         finally:
             adb_server.stop()
             task.cancel()

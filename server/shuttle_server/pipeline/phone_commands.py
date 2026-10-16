@@ -5,7 +5,6 @@ Handled before the agent, only when the sentence clearly is about *which phone* 
   "切换到小米" / "用工作机" / "连接 Pixel"          -> that phone (only if the name is a known phone;
                                                     "切换到飞行模式" still goes to the agent)
   "现在连的是哪台手机" / "有哪些手机"               -> say it
-  "关闭这台手机的无线调试" / "断开这台手机"          -> `adb usb` on it (undoes `adb tcpip`), switch away
 """
 from __future__ import annotations
 
@@ -27,9 +26,6 @@ RE_WHICH = re.compile(rf"(哪|那)(一)?(台|个|部){_PHONE}|(连|用|控制)(�
 RE_NEXT = re.compile(rf"^(请|帮我|给我)?(换|切换|切|轮换)(一下)?(到)?(一|另一|另外一|下一|别的|其他)?(个|台|部)?{_PHONE}(吧|呀|啊)?$"
                      rf"|^(请)?(下一|另一)(个|台|部){_PHONE}(吧)?$")
 RE_SELECT = re.compile(r"^(请|帮我)?(切换到|切换成|切到|换到|换成|改用|改成|使用|用|连接到|连接|连到|连上|连)(.+)$")
-RE_DISABLE = re.compile(rf"(关闭|关掉|关了|停用|断开)(这|这个|这台|这部|当前|现在)?(的)?{_PHONE}?(的)?"
-                        rf"(无线调试|无线adb|adb|调试|tcpip)"
-                        rf"|^(断开|断掉)(这|这个|这台|这部|当前)?(的)?{_PHONE}$")
 
 
 def _label(t: "AdbTunnel", host: str) -> str:
@@ -56,8 +52,6 @@ class PhoneCommands:
         t = norm(text)
         if not t or len(t) > 30:
             return None
-        if RE_DISABLE.search(t):
-            return (await self.disable(self._tunnel(device_id)))["message"]
         if RE_LIST.search(t) or RE_WHICH.search(t):
             return self.describe(self._tunnel(device_id))
         if RE_NEXT.search(t):
@@ -128,12 +122,3 @@ class PhoneCommands:
             return {"ok": True, "host": host, "message": f"现在用的就是{label}"}
         await t.switch_to(host, f"user selected {label}")
         return {"ok": True, "host": host, "message": f"好的，切换到{label}"}
-
-    async def disable(self, t: "AdbTunnel | None") -> dict[str, Any]:
-        if t is None or not t.current_host:
-            return {"ok": False, "message": "现在没有连手机"}
-        phone = await t.disable_current()
-        name = phone.name if phone else "这台手机"
-        if phone is not None and self.app.registry.pinned == phone.serial:
-            self.app.registry.pin(None)
-        return {"ok": True, "message": f"已关闭{name}的无线调试，再用它要重新执行 adb tcpip 5555"}

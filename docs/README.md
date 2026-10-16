@@ -87,13 +87,13 @@ shows e.g. `Pixel 8 +1` = connected to Pixel 8, one more phone around). Which on
 | say **"换手机"** / **"下一台手机"** | next phone |
 | say **"切换到小米"** (any part of its name / model / alias) | that phone, and it stays the preferred one |
 | say **"现在连的是哪台手机"** | the board tells you (and lists the others) |
-| say **"关闭这台手机的无线调试"** | `adb usb` on it — adbd leaves TCP mode (the opposite of `adb tcpip`), the board moves to another phone |
 | the current phone disappears (left, rebooted) | the board rescans and takes the next one |
 
 Two phones that both ran `adb tcpip 5555` don't conflict: each listens on its own IP. To make a
-phone stop listening: say the sentence above, or `adb -s <ip>:5555 usb`, or toggle USB debugging,
-or reboot it. Names: the phone's *Device name* (Settings → About phone), model, or
-`phones.aliases` in `server/config.yaml`. HTTP: `GET /api/phones`, `POST /api/phones/{select,next,disable,rescan}`
+phone stop listening (rarely needed — just switch): `adb -s <ip>:5555 usb` from a computer on the
+same Wi-Fi, toggle USB debugging, or reboot it. There is deliberately no voice command for this:
+turning it back on needs a USB cable (`adb tcpip 5555`), so it cannot be undone remotely. Names: the phone's *Device name* (Settings → About phone), model, or
+`phones.aliases` in `server/config.yaml`. HTTP: `GET /api/phones`, `POST /api/phones/{select,next,rescan}`
 (see [protocol.md](protocol.md#several-phones--apiphones)).
 
 Optional: `CONFIG_SHUTTLE_WIFIn_PHONE_HOST="<ip>"` pins a network to one phone (no scan),

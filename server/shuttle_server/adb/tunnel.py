@@ -401,19 +401,6 @@ class AdbTunnel:
             return True
         return False
 
-    async def disable_current(self) -> PhoneRecord | None:
-        """`adb usb` on the current phone: it leaves TCP mode (undo of `adb tcpip`), then switch away."""
-        phone, host = self.phone, self.current_host
-        if not host:
-            return None
-        with contextlib.suppress(AdbError):
-            res = await self.adb.run("usb", serial=self.serial, timeout_s=10)
-            log.info("[%s] adb usb on %s: %s", self.device_id, host, res.text.strip())
-        self._avoid[host] = time.monotonic() + max(self.pcfg.avoid_after_fail_s, 300.0)
-        others = [h for h in self.cands.hosts if h != host]
-        await self.switch_to(others[0] if others else None, "wireless debugging switched off")
-        return phone
-
     async def _identify(self, session_id: int) -> None:
         try:
             res = await self.adb.shell(self.serial, IDENTIFY_CMD, timeout_s=10)

@@ -45,7 +45,7 @@ phone:
 
 # Several phones: the board finds every phone with `adb tcpip 5555` on its Wi-Fi, the Mac
 # recognises them (serial/model) and picks one. Switch by voice: "换手机", "切换到<名字>",
-# "现在连的是哪台手机", "关闭这台手机的无线调试"; or GET/POST /api/phones.
+# "现在连的是哪台手机"; or GET/POST /api/phones.
 phones:
   state_file: "~/Library/Application Support/shuttle/phones.json"   # known phones; "" = memory only
   auto_switch_new: true    # a never-seen phone appears (just ran adb tcpip) -> switch to it when idle

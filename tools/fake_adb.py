@@ -134,9 +134,6 @@ def main(argv: list[str]) -> int:
         save_state([s for s in load_state() if s not in rest])
         print(f"disconnected {rest[0] if rest else 'everything'}")
         return 0
-    if cmd == "usb":
-        print("restarting in USB mode")
-        return 0
     if cmd == "push":
         print(f"{rest[0]}: 1 file pushed. 0.1 MB/s")
         return 0

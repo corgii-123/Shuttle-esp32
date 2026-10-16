@@ -8,7 +8,7 @@ Routes (one port, put behind Cloudflare Tunnel):
   GET  /status             detailed state                                (token)
   *    /api/phone/...      phone control API for external agents        (token)
   GET  /api/phones         phones the device found + which one is connected (token)
-  POST /api/phones/{select,next,disable,rescan}   switch phones           (token)
+  POST /api/phones/{select,next,rescan}   switch phones           (token)
   GET  /firmware/<file>    firmware download for OTA (if ota.firmware_dir is set)
 """
 from __future__ import annotations
@@ -266,8 +266,6 @@ class ShuttleApp:
                                                    name=body.get("name"), pin=bool(body.get("pin", True)))
         elif action == "next":
             res = await self.phone_commands.next(t)
-        elif action == "disable":
-            res = await self.phone_commands.disable(t)
         elif action == "rescan":
             ok = await t.rescan(self.cfg.phones.rescan_wait_s)
             res = {"ok": ok, "message": "已重新扫描" if ok else "设备没有响应扫描请求"}

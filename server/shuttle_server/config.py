@@ -76,7 +76,7 @@ class PhonesConfig:
     # A phone that was never seen before shows up (someone just ran `adb tcpip 5555` on it):
     # switch to it automatically when no task is running.
     auto_switch_new: bool = True
-    voice_commands: bool = True  # "换手机" / "切换到<名字>" / "现在连的是哪台手机" / "关闭无线调试"
+    voice_commands: bool = True  # "换手机" / "切换到<名字>" / "现在连的是哪台手机"
     aliases: dict[str, str] = field(default_factory=dict)  # serial -> spoken name, e.g. {"R5CT...": "工作机"}
     rescan_wait_s: float = 8.0  # "换手机" with one phone: ask the device to rescan, wait this long
     avoid_after_fail_s: float = 120.0  # an unreachable / switched-off host is not picked again for this long
