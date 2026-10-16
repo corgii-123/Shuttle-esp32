@@ -3,6 +3,7 @@
 // CONFIG_SHUTTLE_* directly for server/Wi-Fi settings.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -11,8 +12,8 @@ namespace shuttle {
 struct WifiNetwork {
     std::string ssid;
     std::string password;
-    // "" -> use the DHCP gateway (phone hotspot); "none" -> no ADB bridge on this
-    // network; anything else -> literal host/IP of the phone.
+    // "" -> find phones automatically; "none" -> no ADB bridge on this network;
+    // anything else -> literal host/IP of the only phone to use.
     std::string phone_host;
     int priority = 0;  // 0 = highest
 };
@@ -26,18 +27,25 @@ std::string GetCtrlUrl();  // <base>/ws/ctrl
 std::string GetAdbUrl();   // <base>/ws/adb
 std::string GetOtaUrl();   // http(s)://<host>[/prefix]/xiaozhi/ota/
 
-// How the phone is reached on a given network:
-//   kGateway  - phone hotspot: the phone is the DHCP gateway (phone_host empty)
-//   kFixed    - router / home Wi-Fi: phone at a fixed IP or hostname (phone_host set)
+// How the phone is found on a given network:
+//   kAuto     - scan the network for adbd (phone_host empty): the hotspot phone, phones on
+//               the router, any number of them; the server picks one (see phone_scanner.h)
+//   kFixed    - only the phone at this IP / hostname (phone_host set, no scan)
 //   kDisabled - no ADB bridge on this network (phone_host == "none")
-// Networks not in Kconfig (added via the Wi-Fi portal) are treated as kGateway.
-enum class PhoneHostMode { kGateway, kFixed, kDisabled };
+// Networks not in Kconfig (added via the Wi-Fi portal) are kAuto.
+enum class PhoneHostMode { kAuto, kFixed, kDisabled };
 PhoneHostMode GetPhoneHostMode(const std::string& ssid);
 const char* PhoneHostModeName(PhoneHostMode mode);
+std::string GetFixedPhoneHost(const std::string& ssid);  // kFixed only, else ""
 
-// Phone address for the network with this SSID. Returns "" when the bridge should not
-// run (kDisabled, or kGateway without an IP yet).
-std::string ResolvePhoneHost(const std::string& ssid);
+// Station IPv4 info in network byte order. False if not connected.
+bool GetStaIpv4(uint32_t* ip, uint32_t* netmask, uint32_t* gateway);
+std::string Ipv4ToString(uint32_t addr);  // network byte order
+
+// Phone used last on this network (NVS), tried first by the scan and used when the server
+// does not answer the hello.
+std::string LoadLastPhone(const std::string& ssid);
+void SaveLastPhone(const std::string& ssid, const std::string& host);
 
 std::string GetStaGatewayIp();  // "" if not connected
 std::string GetStaIp();

@@ -3,29 +3,28 @@
 CONFIG_SHUTTLE_SERVER_URL="wss://shuttle.example.com"
 CONFIG_SHUTTLE_TOKEN="change-me-to-a-long-random-string"
 
-# Wi-Fi list in priority order. PHONE_HOST tells the ESP32 where the phone's adbd is:
-#   a fixed IP  -> router mode: ESP32 and phone both on this Wi-Fi, phone at that IP
-#   empty ("")  -> hotspot mode: ESP32 joins the phone's hotspot, the phone is the gateway
-#   "none"      -> no ADB bridge on this network
+# Wi-Fi list in priority order. Phones are found automatically on every network (the board
+# scans for adbd on :5555; the Mac recognises each phone and picks one), so PHONE_HOST stays
+# empty. Optional: PHONE_HOST="<ip>" = only that phone on this network, "none" = no ADB here.
 # All Wi-Fi must be 2.4 GHz (the ESP32-S3 has no 5 GHz).
 
-# Priority 1: home Wi-Fi (router mode). Reserve the phone's IP in the router (DHCP binding)
-# and set the phone to use its device MAC (not a random MAC) for this network.
+# Priority 1: home Wi-Fi (phones on the router)
 CONFIG_SHUTTLE_WIFI1_SSID="HomeWiFi"
 CONFIG_SHUTTLE_WIFI1_PASSWORD="home-password"
-CONFIG_SHUTTLE_WIFI1_PHONE_HOST="192.168.1.50"
+CONFIG_SHUTTLE_WIFI1_PHONE_HOST=""
 
-# Priority 2: the phone's hotspot (when out). Phone = gateway, so leave PHONE_HOST empty.
+# Priority 2: the phone's hotspot (when out)
 CONFIG_SHUTTLE_WIFI2_SSID="MyPhoneHotspot"
 CONFIG_SHUTTLE_WIFI2_PASSWORD="hotspot-password"
 CONFIG_SHUTTLE_WIFI2_PHONE_HOST=""
 
-# Optional: a third network (office...). Same rules.
+# Optional: a third network (office...)
 # CONFIG_SHUTTLE_WIFI3_SSID="Office"
 # CONFIG_SHUTTLE_WIFI3_PASSWORD="..."
-# CONFIG_SHUTTLE_WIFI3_PHONE_HOST="10.0.0.23"
 
 # Optional tuning
 # CONFIG_SHUTTLE_WIFI_ROAM_INTERVAL_S=300   # hotspot -> home auto switch check (doubles up to 1 h)
 # CONFIG_SHUTTLE_SKIP_OTA_CHECK=y
 # CONFIG_SHUTTLE_ADB_RX_BUFFER_KB=256
+# CONFIG_SHUTTLE_PHONE_SCAN_INTERVAL_S=60   # look for new phones (0 = only when none is connected)
+# CONFIG_SHUTTLE_PHONE_SCAN_TIMEOUT_MS=700  # raise if a sleeping phone is missed

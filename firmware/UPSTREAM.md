@@ -14,7 +14,8 @@
 ```
 firmware/extra_components/shuttle/          ESP-IDF component (pure IDF, no xiaozhi deps)
   Kconfig                                   menuconfig: server, token, Wi-Fi list, bridge tuning
-  shuttle_config.cc / include/shuttle/*.h   config access, NVS provisioning, gateway IP
+  shuttle_config.cc / include/shuttle/*.h   config access, NVS provisioning, last phone per SSID
+  phone_scanner.cc                          finds phones (adbd on :5555) on the local /24
   adb_bridge.cc                             TCP(phone:5555) <-> WebSocket(/ws/adb) byte bridge
 firmware/main/boards/shuttle/epaper-1.54-v2/
   config.h / config.json / README.md        board identity; includes the waveshare config.h

@@ -6,7 +6,8 @@
 //   * Custom e-paper UI (ShuttleDisplay) with phone/ADB link and battery percentage.
 //   * Wi-Fi uses ShuttleWifi (priority order + roam-up) and never falls into the config
 //     portal just because the hotspot is off; triple-click BOOT opens the portal.
-//   * Starts the ADB TCP<->WebSocket bridge to the phone (gateway:5555).
+//   * Starts the ADB TCP<->WebSocket bridge; phones are found by scanning the Wi-Fi for
+//     adbd (the hotspot phone or phones on a router) and the server picks which one.
 //   * Handles "shuttle" JSON messages from the server (task progress, phone state).
 #include <driver/gpio.h>
 #include <driver/i2c_master.h>
@@ -56,7 +57,7 @@ private:
     int ptt_release_polls_ = 0;
 
     std::string server_adb_state_;  // from server: device / unauthorized / offline / ...
-    bool home_network_ = false;     // current Wi-Fi reaches the phone at a fixed IP (router mode)
+    bool home_network_ = false;     // the phone in use is not the hotspot (reached via a router)
     uint64_t last_bridge_bytes_ = 0;
     int64_t last_bridge_activity_us_ = 0;
 
@@ -267,7 +268,17 @@ private:
         auto cfg = shuttle::AdbBridge::DefaultConfig();
         cfg.device_id = SystemInfo::GetMacAddress();
         bridge_ = std::make_unique<shuttle::AdbBridge>(cfg, []() {
-            return shuttle::ResolvePhoneHost(WifiManager::GetInstance().GetSsid());
+            shuttle::AdbBridge::Target t;
+            t.ssid = WifiManager::GetInstance().GetSsid();
+            switch (shuttle::GetPhoneHostMode(t.ssid)) {
+                case shuttle::PhoneHostMode::kAuto: t.mode = shuttle::AdbBridge::Target::Mode::kAuto; break;
+                case shuttle::PhoneHostMode::kFixed:
+                    t.mode = shuttle::AdbBridge::Target::Mode::kFixed;
+                    t.fixed_host = shuttle::GetFixedPhoneHost(t.ssid);
+                    break;
+                case shuttle::PhoneHostMode::kDisabled: t.mode = shuttle::AdbBridge::Target::Mode::kDisabled; break;
+            }
+            return t;
         });
         bridge_->SetStatusCallback([this](const shuttle::AdbBridgeStatus&) {
             Application::GetInstance().Schedule([this]() { UpdatePhoneLine(); });
@@ -291,6 +302,8 @@ private:
         switch (st.state) {
             case shuttle::LinkState::kDisabled: text = "未配置手机"; break;
             case shuttle::LinkState::kWaitingNetwork: text = "等待Wi-Fi"; break;
+            case shuttle::LinkState::kScanning: text = "搜索手机"; break;
+            case shuttle::LinkState::kNoPhone: text = "未发现手机"; break;
             case shuttle::LinkState::kConnectingServer: text = "连接服务器"; break;
             case shuttle::LinkState::kServerUnreachable: text = "服务器断开"; break;
             case shuttle::LinkState::kConnectingPhone:
@@ -299,9 +312,7 @@ private:
                 break;
             case shuttle::LinkState::kPhoneUnreachable:
                 server_ok = true;
-                // Hotspot: the phone is the gateway, so it is there but adbd is not listening.
-                // Home Wi-Fi: the phone may simply not be on this network (or its IP changed).
-                text = home_network_ ? "连不上手机" : "ADB未开启";
+                text = "连不上手机";  // it went away (reboot drops `adb tcpip`); a rescan follows
                 break;
             case shuttle::LinkState::kActive:
                 server_ok = true;
@@ -311,10 +322,20 @@ private:
                 } else if (server_adb_state_ == "offline") {
                     text = "手机离线";
                     phone_ok = false;
+                } else if (!st.phone_name.empty()) {
+                    text = st.phone_name;
+                    if (st.phones_found > 1) {
+                        text += " +" + std::to_string(st.phones_found - 1);  // more phones around
+                    }
                 } else {
                     text = "手机已连接";
                 }
                 break;
+        }
+        bool home = st.state == shuttle::LinkState::kActive && !st.phone_host.empty() && st.phone_host != st.gateway;
+        if (home != home_network_) {
+            home_network_ = home;
+            display_->SetHomeNetwork(home);
         }
         display_->SetPhoneLink(phone_ok, text);
         display_->SetServerLink(server_ok);
@@ -381,14 +402,10 @@ public:
                     break;
                 case WifiEvent::Connected: {
                     auto mode = shuttle::GetPhoneHostMode(data);
-                    ESP_LOGI(TAG, "Wi-Fi '%s' ip=%s gw=%s, phone via %s -> %s", data.c_str(),
-                             shuttle::GetStaIp().c_str(), shuttle::GetStaGatewayIp().c_str(),
-                             shuttle::PhoneHostModeName(mode), shuttle::ResolvePhoneHost(data).c_str());
-                    Application::GetInstance().Schedule([this, mode]() {
-                        home_network_ = (mode == shuttle::PhoneHostMode::kFixed);
-                        display_->SetHomeNetwork(home_network_);
-                        UpdatePhoneLine();
-                    });
+                    ESP_LOGI(TAG, "Wi-Fi '%s' ip=%s gw=%s, phone: %s %s", data.c_str(), shuttle::GetStaIp().c_str(),
+                             shuttle::GetStaGatewayIp().c_str(), shuttle::PhoneHostModeName(mode),
+                             shuttle::GetFixedPhoneHost(data).c_str());
+                    Application::GetInstance().Schedule([this]() { UpdatePhoneLine(); });
                     OnNetworkEvent(NetworkEvent::Connected, data);
                     if (bridge_) bridge_->SetNetworkUp(true);
                     break;

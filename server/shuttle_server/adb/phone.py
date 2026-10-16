@@ -103,10 +103,15 @@ def escape_input_text(text: str) -> str:
 
 
 class PhoneController:
-    def __init__(self, adb: AdbCli, serial: str | Callable[[], str | None], cfg: PhoneConfig):
+    def __init__(self, adb: AdbCli, serial: str | Callable[[], str | None], cfg: PhoneConfig,
+                 generation: Callable[[], int] | None = None):
         self.adb = adb
         self._serial = serial
         self.cfg = cfg
+        # Changes whenever another phone may now sit behind the same serial (127.0.0.1:15555
+        # after a phone switch): per-phone caches are dropped.
+        self._generation = generation
+        self._seen_generation = generation() if generation else 0
         self.helper_jar = Path(cfg.helper_jar).expanduser() if cfg.helper_jar else DEFAULT_HELPER
         self.last: Screenshot | None = None
         self._helper_pushed: set[str] = set()
@@ -118,9 +123,21 @@ class PhoneController:
     @property
     def serial(self) -> str:
         s = self._serial() if callable(self._serial) else self._serial
+        if self._generation is not None:
+            gen = self._generation()
+            if gen != self._seen_generation:
+                self._seen_generation = gen
+                self.reset()
         if not s:
             raise PhoneUnavailable("手机未连接（ESP32 ADB 隧道未建立，且未配置 adb.fallback_serial）")
         return s
+
+    def reset(self) -> None:
+        """Forget everything learned about the phone (size, helper pushed, last screenshot)."""
+        self.last = None
+        self._helper_pushed.clear()
+        self._helper_broken_until = 0.0
+        self._device_size.clear()
 
     async def is_ready(self) -> bool:
         try:

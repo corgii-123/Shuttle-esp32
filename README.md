@@ -7,7 +7,8 @@ byte. The phone needs no app.
 
 * **firmware/** — ESP-IDF v6.1 firmware based on [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)
   for the Waveshare ESP32-S3-ePaper-1.54 **V2**: push-to-talk, Opus, xiaozhi WebSocket protocol,
-  e-paper status, multi-SSID Wi-Fi, ADB TCP⇄WebSocket bridge.
+  e-paper status, multi-SSID Wi-Fi, ADB TCP⇄WebSocket bridge that finds phones by itself (no IPs to
+  configure; several phones, switch by voice: "换手机" / "切换到小米").
 * **server/** — Python 3.11+ aiohttp server for macOS: token-protected WebSockets, ADB tunnel
   (`adb connect 127.0.0.1:15555`), `PhoneController`, ASR (Qwen) → Agent → TTS with mocks.
 * **tools/** — `sim_device.py` (simulate the device), `fake_adb.py` (simulate a phone).

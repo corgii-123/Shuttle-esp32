@@ -110,8 +110,8 @@ void ShuttleDisplay::SetMessage(const std::string& text) {
 // Idle message: what to do next, based on the phone link (subtitle says what is wrong).
 static const char* IdleHint(bool phone_ok, const std::string& detail) {
     if (phone_ok) return kIdleHint;
-    if (detail == "ADB未开启") return "手机上执行 adb tcpip 5555";
-    if (detail == "连不上手机") return "手机没连这个 Wi-Fi？双击 BOOT 换网络";
+    if (detail == "未发现手机" || detail == "连不上手机") return "手机连同一 Wi-Fi，执行 adb tcpip 5555";
+    if (detail == "搜索手机") return "正在找开了无线调试的手机";
     if (detail == "请手机授权") return "在手机上点“允许 USB 调试”";
     if (detail == "服务器断开") return "检查网络或服务器地址";
     if (detail == "等待Wi-Fi") return "连三下 BOOT 可配置 Wi-Fi";
@@ -120,7 +120,7 @@ static const char* IdleHint(bool phone_ok, const std::string& detail) {
 
 void ShuttleDisplay::ShowIdle() {
     if (phone_ok_) {
-        ui_.SetMood(ShuttleUi::Mood::kIdle, "待命", "手机已连接");
+        ui_.SetMood(ShuttleUi::Mood::kIdle, "待命", phone_detail_.c_str());  // phone name
     } else {
         ui_.SetMood(ShuttleUi::Mood::kOffline, "待命", phone_detail_.c_str());
     }
@@ -300,7 +300,7 @@ void ShuttleDisplay::SetPhoneLink(bool ok, const std::string& detail) {
     if (mood == ShuttleUi::Mood::kIdle || mood == ShuttleUi::Mood::kOffline) {
         ShowIdle();
     } else if (mood == ShuttleUi::Mood::kSleep) {
-        ui_.SetSubtitle(ok ? "手机已连接" : detail);
+        ui_.SetSubtitle(detail);
     }
 }
 

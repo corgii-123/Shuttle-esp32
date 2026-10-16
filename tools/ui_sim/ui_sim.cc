@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
 
     printf("rendering to %s\n", g_out.c_str());
     status_bar(true, true);
-    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "手机已连接");
+    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "Xiaomi 14");
     ui.SetMessage("按住 BOOT 说话");
     Save("01_idle");
     Advance(ui, 91000);
@@ -195,8 +195,8 @@ int main(int argc, char** argv) {
     Save("08_error");
 
     status_bar(false, true);
-    ui.SetMood(ShuttleUi::Mood::kOffline, "待命", "ADB未开启");
-    ui.SetMessage("手机上执行 adb tcpip 5555");
+    ui.SetMood(ShuttleUi::Mood::kOffline, "待命", "未发现手机");
+    ui.SetMessage("手机连同一 Wi-Fi，执行 adb tcpip 5555");
     Save("09_offline");
 
     status_bar(false, false);
@@ -206,17 +206,22 @@ int main(int argc, char** argv) {
     Save("10_no_server");
 
     status_bar(true, true, true);
-    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "手机已连接");
-    ui.SetMessage("家里 Wi-Fi · 按住 BOOT 说话");
+    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "Pixel 8 +1");
+    ui.SetMessage("按住 BOOT 说话");
     Save("12_home_wifi");
 
-    status_bar(false, true, true);
-    ui.SetMood(ShuttleUi::Mood::kOffline, "待命", "连不上手机");
-    ui.SetMessage("手机没连家里 Wi-Fi？双击 BOOT 换网络");
-    Save("13_home_no_phone");
+    status_bar(false, true);
+    ui.SetMood(ShuttleUi::Mood::kOffline, "待命", "搜索手机");
+    ui.SetMessage("正在找开了无线调试的手机");
+    Save("13_scanning");
+
+    status_bar(true, true, true);
+    ui.SetMood(ShuttleUi::Mood::kDone, nullptr, "");
+    ui.SetMessage("好的，换到Pixel 8");
+    Save("14_switched");
 
     status_bar(true, true);
-    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "手机已连接");
+    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "Xiaomi 14");
     ui.SetMessage("");
     Advance(ui, 601000);
     Save("11_sleep");

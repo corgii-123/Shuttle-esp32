@@ -106,3 +106,12 @@ async def test_phone_api(server_factory):
             assert r.status == 400
         async with http.get(base + "/screenshot") as r:
             assert r.status == 401
+
+
+async def test_phone_question_is_answered_without_agent(server_factory, fake_adb_env):
+    srv = await server_factory(asr={"mock": {"text": "现在连的是哪台手机？"}})
+    res = await run_turn(srv, pcmlib.tone(300, 1500, 16000))
+    assert res.final_state == "done"
+    assert res.tts_text and "手机" in res.tts_text[0]
+    # the agent never ran: no screenshot / input on the phone
+    assert not any("screencap" in " ".join(c) for c in adb_calls(fake_adb_env))

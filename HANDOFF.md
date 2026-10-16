@@ -5,7 +5,7 @@ State at hand-off (written in a cloud environment **without** the board, the pho
 | Part | Status |
 |---|---|
 | Firmware | Complete. **Compiles in CI** (GitHub Actions *Firmware*, ESP-IDF v6.1, esp-idf-ci-action) → `merged-binary.bin` artifact (app 2.7 MB, 10 % partition headroom). The `shuttle` component also compiles locally with `-Werror`. **Never run on hardware.** |
-| Server | Complete. 35 pytest tests pass (Python 3.11 + 3.13 in CI): fake-adb phone control, byte-exact ADB tunnel with a simulated bridge, full voice → ASR(mock) → agent → adb → TTS(mock) chain. **Never run against a real phone, Qwen ASR or macOS `say`.** |
+| Server | Complete. 44 pytest tests pass (Python 3.11 + 3.13 in CI): fake-adb phone control, byte-exact ADB tunnel with a simulated bridge, full voice → ASR(mock) → agent → adb → TTS(mock) chain. **Never run against a real phone, Qwen ASR or macOS `say`.** |
 | Phone helper | Java compiles; dex jar built in CI (*Server* → artifact `shuttle-helper-jar`). **Never run on a phone.** |
 | Deploy | `install.sh`, launchd plists, watchdog, cloudflared config written; **not executed on macOS** (bash syntax-checked only). |
 
@@ -44,20 +44,31 @@ State at hand-off (written in a cloud environment **without** the board, the pho
      panel check: contrast of the 4-bpp CJK text after thresholding, ghosting of the inverted
      title pill, and whether mascot animations (0.6–1 s/frame partial refreshes) look smooth
      enough or should be slowed/disabled (`ShuttleUi::Timing`, `kAnims` intervals).
-4. **Wi-Fi priority / router + hotspot modes** — `shuttle_wifi.cc`, `shuttle_config.cc`.
-   Each Kconfig network carries `PHONE_HOST`: fixed IP = router mode (home Wi-Fi, phone at a
-   reserved IP), empty = hotspot mode (phone = DHCP gateway). esp-wifi-connect 3.3.1 connects to
+4. **Phone discovery + several phones** — `phone_scanner.cc`, `adb_bridge.cc`, server
+   `adb/phones.py`, `pipeline/phone_commands.py`. No phone IP is configured: the board scans its
+   /24 for :5555 (8 parallel non-blocking connects, 700 ms, priority hosts first) and verifies
+   adbd with a CNXN probe (expects AUTH/CNXN/STLS; must **not** show a dialog on the phone — verify
+   once); hello → server picks by serial (`phones.json`) → `connect`. Untested on hardware: how
+   long a full scan really takes, whether phones in Wi-Fi power save answer within 700 ms
+   (`CONFIG_SHUTTLE_PHONE_SCAN_TIMEOUT_MS`), lwIP socket/ARP limits during a scan
+   (`CONFIG_LWIP_MAX_SOCKETS=24`, batch 8 < ARP table 10), the close-code-4005 path in
+   esp_websocket_client (a `{"type":"switch"}` text frame is sent too), the first "Allow USB
+   debugging?" prompt after switching to a new phone. Simulated end to end in
+   `server/tests/test_phones.py` (two fake adbds, `sim_device.py` speaks the same protocol).
+5. **Wi-Fi priority** — `shuttle_wifi.cc`, `shuttle_config.cc`.
+   Each Kconfig network carries `PHONE_HOST`: empty = find phones automatically (default),
+   IP = only that phone, `none` = no ADB. esp-wifi-connect 3.3.1 connects to
    the strongest known AP; we emulate priority by temporarily restricting SsidManager's list (NVS
    rewrite, only while the station is stopped) and restarting the station: boot tries #1 for 20 s;
    while idle on a lower network it retries higher ones after 300 s, doubling to 1 h while absent
    (≈20 s offline per check; skipped while ADB traffic flowed in the last 60 s); **BOOT double-click**
    checks immediately. Untested on hardware: real switching times, whether the 20 s offline
    window disturbs anything, phones that cannot be Wi-Fi client while their hotspot is on.
-   Portal-added SSIDs are kept in NVS `shuttle/extra_ssids` (treated as hotspot mode). The upstream
+   Portal-added SSIDs are kept in NVS `shuttle/extra_ssids` (phones found automatically). The upstream
    "no Wi-Fi for 60 s → config portal" timeout is **not** used.
    * BOOT gestures need PTT to start only after a 250 ms hold (`kPttHoldMs`): the first ~0.25 s
      of speech can be cut if the user talks instantly — tune if needed.
-5. **Hardware facts taken from upstream, not measured** — `waveshare/esp32-s3-epaper-1.54/config.h`,
+6. **Hardware facts taken from upstream, not measured** — `waveshare/esp32-s3-epaper-1.54/config.h`,
    cross-checked with waveshareteam/ESP32-S3-ePaper-1.54 V1/V2 examples (V1 and V2 differ only in
    flash/PSRAM; pins identical): ES8311 @ I2C SDA47/SCL48, I2S MCLK14 BCLK15 WS38 DIN16 DOUT45,
    PA 46, EPD SPI3 DC10 CS11 SCK12 MOSI13 RST9 BUSY8, power EPD 6 / audio 42 / VBAT hold 17,
@@ -66,26 +77,26 @@ State at hand-off (written in a cloud environment **without** the board, the pho
    * Battery %: upstream quadratic formula; **charging state is not detectable** (always "discharging").
    * Audio 24 kHz in/out at the codec (upstream); xiaozhi resamples mic to 16 kHz.
    * SHTC3, RTC (PCF85063), TF card and the touch variant are unused.
-6. **xiaozhi channel keepalive** — server sends `{"type":"shuttle","event":"ping"}` every 30 s
+7. **xiaozhi channel keepalive** — server sends `{"type":"shuttle","event":"ping"}` every 30 s
    (resets xiaozhi's 120 s receive timeout) and WS pings (`server.ctrl_heartbeat_s`; xiaozhi's
    `web_socket.cc` answers pings — read in source, not observed). Idle channel closed after 600 s.
-7. **OTA check at boot** — server answers `/xiaozhi/ota/` with time + same version +
+8. **OTA check at boot** — server answers `/xiaozhi/ota/` with time + same version +
    `websocket: {}`. If the server is unreachable at boot, xiaozhi retries up to 10× with growing
    delays and shows an error; pressing BOOT skips it (state → idle; WebSocket is forced by the
    `SHUTTLE:` patch). Alternative: `CONFIG_SHUTTLE_SKIP_OTA_CHECK=y`.
-8. **Phone helper** (`server/phone_helper`): raw `screencap` header (12 vs 16 bytes),
+9. **Phone helper** (`server/phone_helper`): raw `screencap` header (12 vs 16 bytes),
    `Bitmap` under `app_process`, `IClipboard.setPrimaryClip` signatures (scrcpy technique),
    ROM restrictions (MIUI/HyperOS "USB debugging (Security settings)"). Fallbacks exist
    (Mac compression; ADBKeyboard; `input text` for ASCII).
-9. **Qwen ASR API shape** — assumed OpenAI-compatible (`/v1/audio/transcriptions` or
+10. **Qwen ASR API shape** — assumed OpenAI-compatible (`/v1/audio/transcriptions` or
    `/v1/chat/completions` with `audio_url`) as served by vLLM; adapt `pipeline/asr.py` to the
    actual local deployment.
-10. **macOS specifics** — `say -o … --data-format=LEI16@24000` from a **LaunchDaemon** (no GUI
+11. **macOS specifics** — `say -o … --data-format=LEI16@24000` from a **LaunchDaemon** (no GUI
     session) is untested; if it fails use `install.sh --agent` (+ auto-login) or another TTS.
     `pmset autorestart` applies to desktop Macs. Homebrew paths assumed `/opt/homebrew`.
-11. **Agent** — `SimpleAgent` is a rule-based placeholder demonstrating the loop; integrate the
+12. **Agent** — `SimpleAgent` is a rule-based placeholder demonstrating the loop; integrate the
     pi agent via `agent.provider: python|command` (`docs/README.md` §2.1).
-12. **PWR key** — unchanged from upstream (long press = power off). GPIO18 is both the PWR key
+13. **PWR key** — unchanged from upstream (long press = power off). GPIO18 is both the PWR key
     input and VBAT sense (upstream design).
 
 ## 2. Bring-up order (each step has a pass criterion)
@@ -101,15 +112,17 @@ State at hand-off (written in a cloud environment **without** the board, the pho
    `sim_device.py --url wss://<host> --phone <gw>:5555 --say "打开设置"`.
    ✅ `/status` shows tunnel `active`, `adb devices` shows `127.0.0.1:15555 device`, the phone opens Settings, reply audio plays.
 4. **Shuttle firmware: Wi-Fi + ADB bridge** — fill `shuttle.local.conf`, `python build_shuttle.py`,
-   `idf.py flash monitor`. Start with **router mode at home** (phone with a reserved IP on home
-   Wi-Fi; easiest to debug), then hotspot mode, then switching (leave/come home, BOOT ×2).
-   ✅ serial: `Wi-Fi '<ssid>' ip=… gw=…, phone via router(fixed ip) -> 192.168.1.50`, `AdbBridge: State … -> active`;
-   Mac: `adb devices` → `device` (accept RSA prompt first time); e-paper bottom "手机已连接";
+   `idf.py flash monitor`. Start **at home** (phone on home Wi-Fi with `adb tcpip 5555`; easiest
+   to debug), then hotspot, then switching (leave/come home, BOOT ×2), then a second phone
+   (`adb tcpip 5555` on it → board switches within a minute; "换手机"; "现在连的是哪台手机").
+   ✅ serial: `PhoneScanner: Scan of 192.168.1.0/24: … 1 phone(s) [192.168.1.50] in … ms`,
+   `AdbBridge: Server chose phone 192.168.1.50`, `State … -> active`; server log `hello on '<ssid>' … (reason)`,
+   `phone at … is <model>`; Mac: `adb devices` → `device` (accept RSA prompt first time); e-paper subtitle = phone name;
    `curl …/api/phone/screenshot` works through the ESP32. Measure screenshot latency.
 5. **Voice up/down** — hold BOOT, say "打开设置", release. ✅ server log `listen start/stop`,
    `utterance N ms`, ASR text; device plays the reply; e-paper 录音中 → 思考中 → 执行中 → 完成.
 6. **End-to-end** — multi-step commands, Chinese text input ("搜索 天气"), interrupting with a new
-   press, phone reboot (→ "ADB未开启" until `adb tcpip 5555`), Mac reboot/power cut (service
+   press, phone reboot (→ "未发现手机" until `adb tcpip 5555`), Mac reboot/power cut (service
    back, device reconnects with backoff), hotspot off/on, home Wi-Fi fallback, 8 h idle (battery,
    ghosting, reconnects).
 

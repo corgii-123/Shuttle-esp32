@@ -7,6 +7,8 @@ Routes (one port, put behind Cloudflare Tunnel):
   GET  /health             liveness for remote monitoring (no secrets, no token)
   GET  /status             detailed state                                (token)
   *    /api/phone/...      phone control API for external agents        (token)
+  GET  /api/phones         phones the device found + which one is connected (token)
+  POST /api/phones/{select,next,disable,rescan}   switch phones           (token)
   GET  /firmware/<file>    firmware download for OTA (if ota.firmware_dir is set)
 """
 from __future__ import annotations
@@ -25,11 +27,13 @@ from aiohttp import web
 from . import __version__
 from .adb.adb_cli import AdbCli, AdbError
 from .adb.phone import PhoneController, PhoneError, PhoneUnavailable
+from .adb.phones import PhoneRegistry
 from .adb.tunnel import AdbTunnel, TunnelManager
 from .auth import check_token
 from .config import Config
 from .pipeline.agent import create_agent
 from .pipeline.asr import create_asr
+from .pipeline.phone_commands import PhoneCommands
 from .pipeline.session import CtrlSession
 from .pipeline.tts import create_tts
 
@@ -43,7 +47,10 @@ class ShuttleApp:
         self.cfg = cfg
         self.started = time.time()
         self.adb = AdbCli(cfg.adb.path, cfg.adb.command_timeout_s)
-        self.tunnels = TunnelManager(self.adb, cfg.adb, on_state_change=self._on_tunnel_state)
+        self.registry = PhoneRegistry(cfg.phones.state_file, cfg.phones.aliases)
+        self.tunnels = TunnelManager(self.adb, cfg.adb, on_state_change=self._on_tunnel_state,
+                                     registry=self.registry, phones_cfg=cfg.phones, is_busy=self.is_busy)
+        self.phone_commands = PhoneCommands(self)
         self.asr = create_asr(cfg.asr)
         self.tts = create_tts(cfg.tts, cfg.voice.tts_sample_rate)
         self.agent = create_agent(cfg.agent)
@@ -62,8 +69,16 @@ class ShuttleApp:
     def phone_for(self, device_id: str | None) -> PhoneController:
         key = device_id or "_default"
         if key not in self._phones:
-            self._phones[key] = PhoneController(self.adb, lambda: self.serial_for(device_id), self.cfg.phone)
+            def generation() -> int:
+                t = self.tunnels.find(device_id)
+                return t.phone_generation if t else 0
+            self._phones[key] = PhoneController(self.adb, lambda: self.serial_for(device_id), self.cfg.phone,
+                                                generation=generation)
         return self._phones[key]
+
+    def is_busy(self, device_id: str) -> bool:
+        s = self.sessions.get(device_id)
+        return s is not None and s.busy
 
     def phone_api_url(self, device_id: str) -> str:
         host = "127.0.0.1" if self.cfg.server.host in ("0.0.0.0", "") else self.cfg.server.host
@@ -213,11 +228,52 @@ class ShuttleApp:
             "providers": {"asr": self.asr.name, "agent": self.agent.name, "tts": self.tts.name},
             "counters": self.counters,
             "tunnels": [t.status() for t in self.tunnels.tunnels.values()],
+            "phones": [p.public() for p in self.registry.all()],
+            "pinned_phone": self.registry.pinned,
             "sessions": [{"device_id": s.device_id, "session_id": s.session_id, "protocol": s.version,
                           "since": int(s.created), "last_text": s.last_text, "last_reply": s.last_reply}
                          for s in self.sessions.values()],
             "config": self.cfg.redacted(),
         })
+
+    # ---- several phones ----
+    def _tunnel_for(self, request: web.Request) -> AdbTunnel:
+        self._auth(request)
+        t = self.tunnels.find(request.query.get("device") or None)
+        if t is None:
+            raise web.HTTPServiceUnavailable(text="no device ADB tunnel\n")
+        return t
+
+    def _phones_body(self, t: AdbTunnel) -> dict[str, Any]:
+        return {"device_id": t.device_id, "ssid": t.cands.ssid, "multi_phone": t.multi_phone,
+                "current": {"host": t.current_host, "phone": t.phone.public() if t.phone else None,
+                            "adb": t.adb_state, "link": t.phone_link},
+                "candidates": t.candidate_list(), "pinned": self.registry.pinned,
+                "known": [p.public() for p in self.registry.all()]}
+
+    async def api_phones(self, request: web.Request) -> web.Response:
+        return web.json_response(self._phones_body(self._tunnel_for(request)))
+
+    async def api_phones_action(self, request: web.Request) -> web.Response:
+        t = self._tunnel_for(request)
+        action = request.match_info["action"]
+        body: dict[str, Any] = {}
+        if request.body_exists:
+            with contextlib.suppress(ValueError):
+                body = json.loads(await request.text() or "{}") or {}
+        if action == "select":
+            res = await self.phone_commands.select(t, host=body.get("host"), serial=body.get("serial"),
+                                                   name=body.get("name"), pin=bool(body.get("pin", True)))
+        elif action == "next":
+            res = await self.phone_commands.next(t)
+        elif action == "disable":
+            res = await self.phone_commands.disable(t)
+        elif action == "rescan":
+            ok = await t.rescan(self.cfg.phones.rescan_wait_s)
+            res = {"ok": ok, "message": "已重新扫描" if ok else "设备没有响应扫描请求"}
+        else:
+            raise web.HTTPNotFound(text=f"unknown action {action}\n")
+        return web.json_response({**res, **self._phones_body(t)}, status=200 if res.get("ok") else 409)
 
     # ---- phone API (for out-of-process agents such as pi) ----
     def _phone(self, request: web.Request) -> PhoneController:
@@ -290,6 +346,8 @@ def build_app(cfg: Config) -> web.Application:
     app.router.add_get("/health", shuttle.handle_health)
     app.router.add_get("/status", shuttle.handle_status)
     app.router.add_route("*", "/api/phone/{action}", shuttle.api_phone)
+    app.router.add_get("/api/phones", shuttle.api_phones)
+    app.router.add_post("/api/phones/{action}", shuttle.api_phones_action)
     app.router.add_get("/firmware/{name}", shuttle.handle_firmware)
 
     async def on_startup(_: web.Application) -> None:

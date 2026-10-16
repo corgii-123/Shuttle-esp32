@@ -7,6 +7,11 @@ either side closes, the other is closed too and the device reconnects (new sessi
 phone always sees a fresh TCP connection for a fresh ADB handshake.
 
     adb server ──TCP──> 127.0.0.1:15555 ──(this file)──> WS /ws/adb ──> ESP32 ──TCP──> phone:5555
+
+Several phones: the device starts each session with {"type":"hello","candidates":[...]} (the adbd
+hosts it found on its Wi-Fi); we answer {"type":"connect","host":...} (see phones.py for the
+policy), identify the phone once adb is up and tell the device its name ({"type":"phone_info"}).
+Switching = close the session with code 4005; the device reconnects at once and asks again.
 """
 from __future__ import annotations
 
@@ -20,8 +25,9 @@ from typing import Awaitable, Callable
 
 from aiohttp import WSMsgType, web
 
-from ..config import AdbConfig
+from ..config import AdbConfig, PhonesConfig
 from .adb_cli import AdbCli, AdbError
+from .phones import IDENTIFY_CMD, Candidates, PhoneRecord, PhoneRegistry, choose_host, next_host, parse_identity
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +35,9 @@ MAX_PREPAIR_BUFFER = 1024 * 1024  # bytes from the phone before adb connected (n
 READ_CHUNK = 64 * 1024
 
 StateCallback = Callable[["AdbTunnel"], Awaitable[None] | None]
+BusyCallback = Callable[[str], bool]
+
+CLOSE_SWITCH = 4005  # server -> device: reconnect now and ask which phone (no backoff)
 
 
 @dataclass
@@ -43,17 +52,35 @@ class WsSession:
     prepair: bytearray = field(default_factory=bytearray)
     bytes_to_phone: int = 0
     bytes_from_phone: int = 0
+    hello: bool = False  # device speaks the multi-phone protocol
+    target: str = ""  # host we told the device to dial
+    end_code: int = 1000  # close code when the adb side ends the session
 
 
 class AdbTunnel:
     def __init__(self, device_id: str, port: int, adb: AdbCli, cfg: AdbConfig,
-                 on_state_change: StateCallback | None = None):
+                 on_state_change: StateCallback | None = None, registry: PhoneRegistry | None = None,
+                 phones_cfg: PhonesConfig | None = None, is_busy: BusyCallback | None = None):
         self.device_id = device_id
         self.port = port
         self.adb = adb
         self.cfg = cfg
         self.serial = f"127.0.0.1:{port}"
         self.on_state_change = on_state_change
+        self.registry = registry or PhoneRegistry()
+        self.pcfg = phones_cfg or PhonesConfig()
+        self.is_busy = is_busy or (lambda _device_id: False)
+
+        # multi-phone state (survives device reconnects; the tunnel object lives as long as the server)
+        self.cands = Candidates()
+        self.current_host = ""  # phone IP the device is spliced to
+        self.phone: PhoneRecord | None = None  # identified phone behind the tunnel
+        self.phone_generation = 0  # bumps whenever the phone behind the serial may have changed
+        self._seen_hosts: set[str] = set()
+        self._avoid: dict[str, float] = {}
+        self._requested: str | None = None
+        self._identified_session = -1
+        self._cands_changed = asyncio.Event()
 
         self.adb_state = "absent"  # from `adb devices`
         self.phone_link = "none"  # none | connecting | connected | unreachable (device reports)
@@ -94,6 +121,10 @@ class AdbTunnel:
             "phone_detail": self.phone_detail,
             "adb_state": self.adb_state,
             "sessions_total": self.sessions_total,
+            "phone": self.phone.public() if self.phone else None,
+            "phone_host": self.current_host,
+            "candidates": self.candidate_list(),
+            "ssid": self.cands.ssid,
             "current_session": None if s is None else {
                 "id": s.id, "age_s": round(time.monotonic() - s.created, 1),
                 "to_phone": s.bytes_to_phone, "from_phone": s.bytes_from_phone,
@@ -153,6 +184,14 @@ class AdbTunnel:
             self.adb_state = state
             await self._notify()
 
+    def candidate_list(self) -> list[dict]:
+        out = []
+        for h in self.cands.hosts:
+            rec = self.registry.by_host(h, self.cands.ssid)
+            out.append({"host": h, "current": h == self.current_host, "hotspot": h == self.cands.gateway,
+                        "serial": rec.serial if rec else None, "name": rec.name if rec else None})
+        return out
+
     # ------------------------------------------------------------------ device side
     async def handle_ws(self, ws: web.WebSocketResponse) -> None:
         """Serve one /ws/adb connection from the device until it closes."""
@@ -193,6 +232,8 @@ class AdbTunnel:
                     if self.phone_link == "connected":
                         self.phone_link = "none"
                 self._session_changed.notify_all()
+            if self._session is None and session.target:
+                self.current_host = ""
             await self._notify()
             if not self.device_connected:
                 self._schedule_teardown()
@@ -212,18 +253,186 @@ class AdbTunnel:
         except json.JSONDecodeError:
             log.warning("[%s] bad control frame: %.100s", self.device_id, data)
             return
-        if msg.get("type") != "phone":
+        mtype = msg.get("type")
+        if mtype == "hello":
+            await self._on_hello(session, msg)
+            return
+        if mtype == "candidates":
+            await self._on_candidates(session, msg)
+            return
+        if mtype != "phone":
             return
         state = msg.get("state", "")
         self.phone_detail = str(msg.get("detail", ""))
         log.info("[%s] phone link: %s %s", self.device_id, state, self.phone_detail)
         if state == "connected":
             self.phone_link = "connected"
+            host = str(msg.get("host") or "") or self.phone_detail.rpartition(":")[0] or session.target
+            if host and host != self.current_host:
+                self.current_host = host
+                self.phone_generation += 1
+                # best guess until adb identifies it
+                self.phone = self.registry.by_host(host, self.cands.ssid)
             session.phone_ready.set()
             async with self._session_changed:
                 self._session_changed.notify_all()
         elif state == "unreachable":
             self.phone_link = "unreachable"
+            bad = str(msg.get("host") or "") or session.target
+            if bad:
+                self._avoid[bad] = time.monotonic() + self.pcfg.avoid_after_fail_s
+        await self._notify()
+
+    # ---- multi-phone protocol
+    def _update_candidates(self, msg: dict) -> list[str]:
+        """Store the device's report; returns hosts that are new on this Wi-Fi since the last report."""
+        hosts = [str(h) for h in (msg.get("candidates") or []) if isinstance(h, str) and h][:32]
+        ssid = str(msg.get("ssid", self.cands.ssid) or "")
+        new_network = ssid != self.cands.ssid or not self._seen_hosts
+        self.cands = Candidates(
+            ssid=ssid, gateway=str(msg.get("gateway", self.cands.gateway) or ""),
+            ip=str(msg.get("ip", self.cands.ip) or ""), hosts=hosts,
+            last=str(msg.get("last", self.cands.last) or ""), fixed=bool(msg.get("fixed", self.cands.fixed)),
+            updated=time.time())
+        if new_network:
+            # first report on this network: nothing counts as "just appeared"
+            self._seen_hosts = set(hosts)
+            new: list[str] = []
+        else:
+            new = [h for h in hosts if h not in self._seen_hosts]
+            self._seen_hosts |= set(hosts)
+        self._cands_changed.set()
+        return new
+
+    def _avoided(self) -> set[str]:
+        now = time.monotonic()
+        self._avoid = {h: t for h, t in self._avoid.items() if t > now}
+        return set(self._avoid)
+
+    async def _on_hello(self, session: WsSession, msg: dict) -> None:
+        session.hello = True
+        new = self._update_candidates(msg)
+        requested, self._requested = self._requested, None
+        auto_new = self.pcfg.auto_switch_new and not self.is_busy(self.device_id)
+        host, why = choose_host(self.registry, self.cands, requested=requested, new_hosts=new,
+                                auto_switch_new=auto_new, avoid=self._avoided())
+        log.info("[%s] hello on '%s' (gw %s): candidates %s -> %s (%s)", self.device_id, self.cands.ssid,
+                 self.cands.gateway, self.cands.hosts, host, why)
+        if host is None:
+            await self._send(session, {"type": "idle", "reason": "no_phone"})
+            return
+        if why == "new phone appeared":
+            self.registry.pin(None)
+        session.target = host
+        await self._send(session, {"type": "connect", "host": host, "reason": why})
+
+    async def _on_candidates(self, session: WsSession, msg: dict) -> None:
+        before = list(self.cands.hosts)
+        new = self._update_candidates(msg)
+        if self.cands.hosts != before:
+            log.info("[%s] candidates %s -> %s (new: %s)", self.device_id, before, self.cands.hosts, new)
+            await self._notify()
+        if not new or not self.pcfg.auto_switch_new:
+            return
+        fresh = [h for h in new if self.registry.by_host(h, self.cands.ssid) is None and h != self.current_host]
+        if not fresh:
+            return
+        if self.is_busy(self.device_id):
+            log.info("[%s] new phone at %s, but a task is running: staying on %s", self.device_id, fresh[0],
+                     self.current_host)
+            return
+        log.info("[%s] a new phone appeared at %s, switching to it", self.device_id, fresh[0])
+        self.registry.pin(None)
+        await self.switch_to(fresh[0], "new phone appeared")
+
+    async def _send(self, session: WsSession | None, obj: dict) -> None:
+        if session is None or session.ws.closed:
+            return
+        with contextlib.suppress(ConnectionError, RuntimeError):
+            await session.ws.send_str(json.dumps(obj, ensure_ascii=False))
+
+    # ---- switching (voice commands / API)
+    @property
+    def multi_phone(self) -> bool:
+        """True when the device runs firmware that reports candidates and can be told to switch."""
+        return bool(self.cands.updated)
+
+    async def switch_to(self, host: str | None, reason: str) -> bool:
+        """Make the device reconnect to `host` (None = let the policy choose again)."""
+        if host is not None and host not in self.cands.hosts:
+            return False
+        log.info("[%s] switching phone %s -> %s (%s)", self.device_id, self.current_host or "-", host or "auto",
+                 reason)
+        self._requested = host
+        if host:
+            self._avoid.pop(host, None)
+        self.phone = None
+        self.current_host = ""
+        self.phone_generation += 1
+        s = self._session
+        if s is not None:
+            s.end_code = CLOSE_SWITCH
+            await self._send(s, {"type": "switch"})  # in case the close code gets lost on the way
+        # Forget the old transport first (adb would otherwise keep the old phone's "device"
+        # state for a while); this also ends the paired session, with code 4005.
+        with contextlib.suppress(AdbError):
+            await self.adb.disconnect(self.serial)
+        await self._set_adb_state("absent")
+        if s is not None:
+            await self._close_session(s, CLOSE_SWITCH, "switch phone")
+        await self._notify()
+        return True
+
+    async def next_phone(self) -> str | None:
+        host = next_host(self.cands, self.current_host)
+        if host is not None:
+            await self.switch_to(host, "next phone")
+        return host
+
+    async def rescan(self, wait_s: float) -> bool:
+        """Ask the device to scan its Wi-Fi again; True if a fresh report arrived in time."""
+        s = self._session
+        if s is None or not s.hello:
+            return False
+        self._cands_changed.clear()
+        await self._send(s, {"type": "rescan"})
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._cands_changed.wait(), wait_s)
+            return True
+        return False
+
+    async def disable_current(self) -> PhoneRecord | None:
+        """`adb usb` on the current phone: it leaves TCP mode (undo of `adb tcpip`), then switch away."""
+        phone, host = self.phone, self.current_host
+        if not host:
+            return None
+        with contextlib.suppress(AdbError):
+            res = await self.adb.run("usb", serial=self.serial, timeout_s=10)
+            log.info("[%s] adb usb on %s: %s", self.device_id, host, res.text.strip())
+        self._avoid[host] = time.monotonic() + max(self.pcfg.avoid_after_fail_s, 300.0)
+        others = [h for h in self.cands.hosts if h != host]
+        await self.switch_to(others[0] if others else None, "wireless debugging switched off")
+        return phone
+
+    async def _identify(self, session_id: int) -> None:
+        try:
+            res = await self.adb.shell(self.serial, IDENTIFY_CMD, timeout_s=10)
+        except AdbError as e:
+            log.info("[%s] cannot identify phone: %s", self.device_id, e)
+            return
+        ident = parse_identity(res.text)
+        if ident is None:
+            log.info("[%s] phone did not report a serial: %r", self.device_id, res.text[:120])
+            return
+        self._identified_session = session_id
+        prev = self.phone.serial if self.phone else None
+        self.phone = self.registry.seen(ident, self.current_host, self.cands.ssid)
+        if prev != self.phone.serial:
+            self.phone_generation += 1
+        log.info("[%s] phone at %s is %s (%s)", self.device_id, self.current_host or "?", self.phone.name,
+                 ident.serial)
+        await self._send(self._session, {"type": "phone_info", "name": self.phone.name, "serial": ident.serial,
+                                         "host": self.current_host})
         await self._notify()
 
     async def _from_phone(self, session: WsSession, data: bytes) -> None:
@@ -294,7 +503,7 @@ class AdbTunnel:
             log.debug("[%s] adb pump ended: %r", self.device_id, e)
         finally:
             log.info("[%s] adb side of session #%d closed", self.device_id, session.id)
-            await self._close_session(session, 1000, "adb closed")
+            await self._close_session(session, session.end_code, "adb closed")
             with contextlib.suppress(Exception):
                 writer.close()
 
@@ -305,6 +514,10 @@ class AdbTunnel:
             try:
                 state = await self.adb.get_state(self.serial)
                 await self._set_adb_state(state)
+                s = self._session
+                if state == "device" and s is not None and s.used and self._identified_session != s.id:
+                    self._identified_session = s.id  # one attempt per session
+                    await self._identify(s.id)
                 if self.device_connected:
                     if state == "offline":
                         # paired: transport wedged; unpaired: adb's own reconnect may have given up.
@@ -321,7 +534,7 @@ class AdbTunnel:
                             log.info("[%s] adb connect %s: %s", self.device_id, self.serial, out)
                     else:
                         self._offline_since = None
-                        if state == "absent" and not self.paired:
+                        if state == "absent":  # (paired + absent: adb forgot it, e.g. after a switch)
                             out = await self.adb.connect(self.serial)
                             log.info("[%s] adb connect %s: %s", self.device_id, self.serial, out)
                 else:
@@ -338,10 +551,15 @@ class AdbTunnel:
 class TunnelManager:
     """One tunnel per Device-Id; local ports allocated from adb.local_port upwards."""
 
-    def __init__(self, adb: AdbCli, cfg: AdbConfig, on_state_change: StateCallback | None = None):
+    def __init__(self, adb: AdbCli, cfg: AdbConfig, on_state_change: StateCallback | None = None,
+                 registry: PhoneRegistry | None = None, phones_cfg: PhonesConfig | None = None,
+                 is_busy: BusyCallback | None = None):
         self.adb = adb
         self.cfg = cfg
         self.on_state_change = on_state_change
+        self.registry = registry or PhoneRegistry()
+        self.phones_cfg = phones_cfg or PhonesConfig()
+        self.is_busy = is_busy
         self.tunnels: dict[str, AdbTunnel] = {}
         self.last_active: str | None = None
 
@@ -352,7 +570,8 @@ class TunnelManager:
             port = self.cfg.local_port
             while port in used:
                 port += 1
-            t = AdbTunnel(device_id, port, self.adb, self.cfg, self.on_state_change)
+            t = AdbTunnel(device_id, port, self.adb, self.cfg, self.on_state_change, self.registry,
+                          self.phones_cfg, self.is_busy)
             self.tunnels[device_id] = t
         self.last_active = device_id
         return t

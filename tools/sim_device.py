@@ -4,8 +4,8 @@
 It speaks exactly what the firmware speaks:
   * /ws/ctrl  xiaozhi protocol: hello -> listen start(manual) -> Opus 16 kHz/60 ms -> listen stop,
               then prints stt / shuttle status / tts and collects the TTS Opus audio;
-  * /ws/adb   (with --phone HOST:PORT) the TCP<->WebSocket byte bridge to a real phone's adbd,
-              same lifecycle and backoff as the firmware.
+  * /ws/adb   (with --phone HOST:PORT, repeatable) the TCP<->WebSocket byte bridge to a real phone's
+              adbd: hello with the reachable phones, the server picks one, same lifecycle as the firmware.
 
 Examples
   # whole chain with a WAV file, save the spoken reply
@@ -14,6 +14,8 @@ Examples
   python tools/sim_device.py --url wss://shuttle.example.com --token T --say "打开设置" --play
   # be the ADB bridge for a phone on the same Wi-Fi (adb tcpip 5555 done), keep running
   python tools/sim_device.py --url ws://127.0.0.1:8765 --token T --phone 192.168.1.23:5555 --bridge-only
+  # two phones on the Wi-Fi: the server chooses; say "换手机" (or POST /api/phones/next) to switch
+  python tools/sim_device.py --token T --phone 192.168.1.23 --phone 192.168.1.42 --bridge-only
   # push-to-talk with the computer microphone (pip install sounddevice): Enter = start/stop
   python tools/sim_device.py --url ws://127.0.0.1:8765 --token T --mic --play
 
@@ -236,45 +238,139 @@ class CtrlClient:
 
 
 # ---------------------------------------------------------------------------- ADB bridge
-class AdbBridgeSim:
-    """Same behaviour as firmware/extra_components/shuttle/adb_bridge.cc."""
+CLOSE_SWITCH = 4005
 
-    def __init__(self, session: aiohttp.ClientSession, url: str, token: str, device_id: str, phone: str):
+
+def split_hostport(addr: str, default_port: int = 5555) -> tuple[str, int]:
+    host, sep, port = addr.rpartition(":")
+    if not sep or not port.isdigit():
+        return addr, default_port
+    return host, int(port)
+
+
+class AdbBridgeSim:
+    """Same behaviour as firmware/extra_components/shuttle/adb_bridge.cc + phone_scanner.cc.
+
+    `phones` are the addresses this "device" can see (HOST or HOST:PORT; the real firmware finds
+    them by scanning its Wi-Fi). A scan keeps the ones that accept a TCP connection. Each session:
+    hello(candidates) -> server says connect(host) -> splice bytes. Close code 4005 = switch now.
+    """
+
+    def __init__(self, session: aiohttp.ClientSession, url: str, token: str, device_id: str,
+                 phone: str | list[str], *, ssid: str = "sim-wifi", gateway: str = "", hello: bool = True,
+                 scan_interval_s: float = 30.0):
         self.http = session
         self.url = url.rstrip("/") + "/ws/adb"
         self.token = token
         self.device_id = device_id
-        host, _, port = phone.rpartition(":")
-        self.host, self.port = host, int(port or 5555)
+        self.phones = [phone] if isinstance(phone, str) else list(phone)
+        self.ssid = ssid
+        self.gateway = gateway
+        self.hello = hello  # False = old firmware (dials phones[0], no hello)
+        self.scan_interval_s = scan_interval_s
+        self.candidates: list[str] = []
+        self.last = ""
+        self.current = ""
+        self.phone_name = ""
         self.backoff = 1.0
+        self.close_code: int | None = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+
+    async def scan(self) -> list[str]:
+        async def probe(addr: str) -> bool:
+            host, port = split_hostport(addr)
+            try:
+                _, w = await asyncio.wait_for(asyncio.open_connection(host, port), 1.0)
+            except (OSError, asyncio.TimeoutError):
+                return False
+            w.close()
+            return True
+
+        ok = await asyncio.gather(*(probe(a) for a in self.phones))
+        found = [a for a, good in zip(self.phones, ok) if good]
+        if found != self.candidates:
+            log.info("scan: %s", found)
+        self.candidates = found
+        return found
+
+    async def rescan(self) -> None:
+        """Scan again and report the result on the open session (like the firmware's idle rescan)."""
+        before = list(self.candidates)
+        await self.scan()
+        if self._ws is not None and not self._ws.closed and self.candidates != before:
+            await self._ws.send_str(json.dumps({"type": "candidates", "ssid": self.ssid, "candidates": self.candidates}))
 
     async def run_forever(self) -> None:
         while True:
             lasted = await self.run_once()
-            if lasted is None or lasted < 10:
+            if self.close_code == CLOSE_SWITCH:
+                delay, self.backoff = 0.05, 1.0
+            elif lasted is None or lasted < 10:
                 delay = self.backoff * random.uniform(0.8, 1.2)
                 self.backoff = min(30.0, self.backoff * 2)
             else:
                 delay, self.backoff = 0.3, 1.0
             await asyncio.sleep(delay)
 
+    async def _pick(self, ws: aiohttp.ClientWebSocketResponse) -> str | None:
+        if not self.hello:
+            return self.phones[0] if self.phones else None
+        await ws.send_str(json.dumps({"type": "hello", "v": 2, "ssid": self.ssid, "gateway": self.gateway,
+                                      "ip": "127.0.0.1", "candidates": self.candidates, "last": self.last,
+                                      "fixed": False}))
+        deadline = time.monotonic() + 3.0
+        while (left := deadline - time.monotonic()) > 0:
+            try:
+                msg = await ws.receive(timeout=left)
+            except asyncio.TimeoutError:
+                break
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                return None
+            data = json.loads(msg.data)
+            if data.get("type") == "connect":
+                return str(data.get("host"))
+            if data.get("type") == "idle":
+                return None
+        # old server: our own choice
+        return self.last if self.last in self.candidates else self.candidates[0]
+
     async def run_once(self) -> float | None:
+        self.close_code = None
+        if self.hello and not self.candidates:
+            await self.scan()
+            if not self.candidates:
+                log.info("no phone found (scanned %s)", self.phones)
+                return None  # like the firmware: no WebSocket until a phone is found
         try:
             ws = await self.http.ws_connect(self.url, headers=headers(self.token, self.device_id, "adb"),
                                             heartbeat=10, max_msg_size=16 * 1024 * 1024)
         except (aiohttp.ClientError, OSError) as e:
             log.warning("adb ws connect failed: %s", e)
             return None
-        try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port), 5)
-        except (OSError, asyncio.TimeoutError) as e:
-            log.warning("phone %s:%d unreachable: %s", self.host, self.port, e)
-            await ws.send_str(json.dumps({"type": "phone", "state": "unreachable", "detail": str(e)}))
-            await ws.close(code=4001, message=b"phone unreachable")
+        target = await self._pick(ws)
+        if target is None:
+            with contextlib.suppress(Exception):
+                await ws.close()
+            self.close_code = ws.close_code
             return None
-        await ws.send_str(json.dumps({"type": "phone", "state": "connected", "detail": f"{self.host}:{self.port}"}))
-        log.info("adb bridge active: phone %s:%d <-> %s", self.host, self.port, self.url)
+        host, port = split_hostport(target)
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 5)
+        except (OSError, asyncio.TimeoutError) as e:
+            log.warning("phone %s unreachable: %s", target, e)
+            await ws.send_str(json.dumps({"type": "phone", "state": "unreachable", "host": target, "detail": str(e)}))
+            await ws.close(code=4001, message=b"phone unreachable")
+            if target in self.candidates:
+                self.candidates.remove(target)
+            return None
+        self.current = self.last = target
+        status = {"type": "phone", "state": "connected", "detail": f"{host}:{port}"}
+        if self.hello:
+            status["host"] = target
+        await ws.send_str(json.dumps(status))
+        log.info("adb bridge active: phone %s <-> %s", target, self.url)
         started = time.monotonic()
+        self._ws = ws
 
         async def phone_to_ws() -> None:
             while True:
@@ -290,16 +386,30 @@ class AdbBridgeSim:
                     await writer.drain()
                 elif msg.type == aiohttp.WSMsgType.TEXT:
                     log.info("server control: %s", msg.data[:200])
+                    data = json.loads(msg.data)
+                    if data.get("type") == "phone_info":
+                        self.phone_name = data.get("name", "")
+                    elif data.get("type") == "rescan":
+                        asyncio.create_task(self.rescan())
+
+        async def periodic_scan() -> None:
+            while True:
+                await asyncio.sleep(self.scan_interval_s)
+                await self.rescan()
 
         tasks = [asyncio.create_task(phone_to_ws()), asyncio.create_task(ws_to_phone())]
+        scanner = asyncio.create_task(periodic_scan()) if self.hello else None
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in tasks:
+        for t in tasks + ([scanner] if scanner else []):
             t.cancel()
         writer.close()
         with contextlib.suppress(Exception):
             await ws.close()
+        self._ws = None
+        self.current = ""
+        self.close_code = ws.close_code
         lasted = time.monotonic() - started
-        log.info("adb session ended after %.1fs", lasted)
+        log.info("adb session ended after %.1fs (close code %s)", lasted, self.close_code)
         return lasted
 
 
@@ -309,7 +419,8 @@ async def amain(args: argparse.Namespace) -> int:
     async with aiohttp.ClientSession() as http:
         bridge_task = None
         if args.phone:
-            bridge = AdbBridgeSim(http, args.url, args.token, device_id, args.phone)
+            bridge = AdbBridgeSim(http, args.url, args.token, device_id, args.phone, gateway=args.gateway,
+                                  hello=not args.legacy_bridge)
             bridge_task = asyncio.create_task(bridge.run_forever())
         if args.bridge_only:
             if not bridge_task:
@@ -361,7 +472,10 @@ def main() -> int:
     src.add_argument("--wav", help="utterance WAV file (any rate, mono/stereo)")
     src.add_argument("--say", help="text spoken with macOS `say` as the utterance")
     src.add_argument("--mic", action="store_true", help="push-to-talk with the microphone (sounddevice)")
-    ap.add_argument("--phone", help="HOST:PORT of a phone adbd to bridge (like the ESP32 does)")
+    ap.add_argument("--phone", action="append", metavar="HOST[:PORT]",
+                    help="a phone adbd the simulated board can see; repeat for several phones (the server picks)")
+    ap.add_argument("--gateway", default="", help="which --phone is the hotspot (DHCP gateway)")
+    ap.add_argument("--legacy-bridge", action="store_true", help="old firmware behaviour: no hello, first --phone")
     ap.add_argument("--bridge-only", action="store_true", help="only run the ADB bridge")
     ap.add_argument("--save-tts", help="write the reply audio to this WAV")
     ap.add_argument("--play", action="store_true", help="play the reply audio")

@@ -130,35 +130,81 @@ PhoneHostMode GetPhoneHostMode(const std::string& ssid) {
         if (n.phone_host == "none") {
             return PhoneHostMode::kDisabled;
         }
-        return n.phone_host.empty() ? PhoneHostMode::kGateway : PhoneHostMode::kFixed;
+        return n.phone_host.empty() ? PhoneHostMode::kAuto : PhoneHostMode::kFixed;
     }
-    return PhoneHostMode::kGateway;
+    return PhoneHostMode::kAuto;
 }
 
 const char* PhoneHostModeName(PhoneHostMode mode) {
     switch (mode) {
-        case PhoneHostMode::kGateway: return "hotspot(gateway)";
-        case PhoneHostMode::kFixed: return "router(fixed ip)";
+        case PhoneHostMode::kAuto: return "auto(scan)";
+        case PhoneHostMode::kFixed: return "fixed";
         case PhoneHostMode::kDisabled: return "disabled";
     }
     return "?";
 }
 
-std::string ResolvePhoneHost(const std::string& ssid) {
-    switch (GetPhoneHostMode(ssid)) {
-        case PhoneHostMode::kDisabled:
-            return "";
-        case PhoneHostMode::kFixed:
-            for (const auto& n : GetConfiguredNetworks()) {
-                if (n.ssid == ssid) {
-                    return n.phone_host;
-                }
-            }
-            return "";
-        case PhoneHostMode::kGateway:
-        default:
-            return GetStaGatewayIp();
+std::string GetFixedPhoneHost(const std::string& ssid) {
+    for (const auto& n : GetConfiguredNetworks()) {
+        if (n.ssid == ssid && n.phone_host != "none") {
+            return n.phone_host;
+        }
     }
+    return "";
+}
+
+bool GetStaIpv4(uint32_t* ip, uint32_t* netmask, uint32_t* gateway) {
+    bool ok = false;
+    auto info = GetStaIpInfo(&ok);
+    if (!ok) {
+        return false;
+    }
+    *ip = info.ip.addr;
+    *netmask = info.netmask.addr;
+    *gateway = info.gw.addr;
+    return true;
+}
+
+std::string Ipv4ToString(uint32_t addr) {
+    esp_ip4_addr_t a = {.addr = addr};
+    char buf[16];
+    esp_ip4addr_ntoa(&a, buf, sizeof(buf));
+    return buf;
+}
+
+std::string LoadLastPhone(const std::string& ssid) {
+    nvs_handle_t handle;
+    if (nvs_open("shuttle", NVS_READONLY, &handle) != ESP_OK) {
+        return "";
+    }
+    char buf[128];
+    size_t len = sizeof(buf);
+    std::string value;
+    if (nvs_get_str(handle, "last_phone", buf, &len) == ESP_OK) {
+        value = buf;
+    }
+    nvs_close(handle);
+    // stored as "<ssid>\t<host>"
+    auto tab = value.rfind('\t');
+    if (tab == std::string::npos || value.substr(0, tab) != ssid) {
+        return "";
+    }
+    return value.substr(tab + 1);
+}
+
+void SaveLastPhone(const std::string& ssid, const std::string& host) {
+    if (ssid.size() + host.size() + 2 > 128 || LoadLastPhone(ssid) == host) {
+        return;
+    }
+    nvs_handle_t handle;
+    if (nvs_open("shuttle", NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    if (NvsWriteStringIfChanged(handle, "last_phone", ssid + "\t" + host)) {
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "Last phone on '%s' = %s", ssid.c_str(), host.c_str());
+    }
+    nvs_close(handle);
 }
 
 void ProvisionXiaozhiSettings() {
