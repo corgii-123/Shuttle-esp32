@@ -5,7 +5,7 @@ State at hand-off (written in a cloud environment **without** the board, the pho
 | Part | Status |
 |---|---|
 | Firmware | Complete. **Compiles in CI** (GitHub Actions *Firmware*, ESP-IDF v6.1, esp-idf-ci-action) → `merged-binary.bin` artifact (app 2.7 MB, 10 % partition headroom). The `shuttle` component also compiles locally with `-Werror`. **Never run on hardware.** |
-| Server | Complete. 34 pytest tests pass (Python 3.11 + 3.13 in CI): fake-adb phone control, byte-exact ADB tunnel with a simulated bridge, full voice → ASR(mock) → agent → adb → TTS(mock) chain. **Never run against a real phone, Qwen ASR or macOS `say`.** |
+| Server | Complete. 35 pytest tests pass (Python 3.11 + 3.13 in CI): fake-adb phone control, byte-exact ADB tunnel with a simulated bridge, full voice → ASR(mock) → agent → adb → TTS(mock) chain. **Never run against a real phone, Qwen ASR or macOS `say`.** |
 | Phone helper | Java compiles; dex jar built in CI (*Server* → artifact `shuttle-helper-jar`). **Never run on a phone.** |
 | Deploy | `install.sh`, launchd plists, watchdog, cloudflared config written; **not executed on macOS** (bash syntax-checked only). |
 
