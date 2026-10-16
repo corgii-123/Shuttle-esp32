@@ -1,0 +1,103 @@
+# 搞快 Shuttle server configuration. Copy to config.yaml (git-ignored) and edit.
+# deploy/install.sh does this for you and generates a random token.
+# Every key is optional; defaults are shown. Env overrides: SHUTTLE_TOKEN, SHUTTLE_PORT,
+# SHUTTLE_LOG_DIR, SHUTTLE_ASR, SHUTTLE_AGENT, SHUTTLE_TTS, SHUTTLE_ADB.
+
+server:
+  host: 127.0.0.1          # cloudflared connects locally. 0.0.0.0 only for LAN tests.
+  port: 8765
+  public_url: wss://shuttle.example.com   # your Cloudflare Tunnel hostname (OTA links, docs)
+
+auth:
+  token: change-me         # MUST equal CONFIG_SHUTTLE_TOKEN in the firmware
+  allow_query_token: false # accept ?token=... too (curl/browser convenience)
+
+logging:
+  dir: ~/Library/Logs/shuttle   # shuttle.log, rotated by size
+  level: INFO
+  max_bytes: 10485760
+  backup_count: 10
+  console: true            # install.sh sets false under launchd (avoid unrotated stdout)
+
+adb:
+  path: adb                # or /opt/homebrew/bin/adb ; may be a command line
+  bind_host: 127.0.0.1
+  local_port: 15555        # adb connect 127.0.0.1:15555 (2nd device: 15556, ...)
+  connect_interval_s: 5
+  device_grace_s: 60       # keep the tunnel this long after the ESP32 disconnects
+  pair_wait_s: 10
+  phone_ready_timeout_s: 3
+  command_timeout_s: 30
+  offline_reset_s: 30
+  fallback_serial: ""      # e.g. "R58M123ABC" (USB) to test the agent without the ESP32
+
+phone:
+  screenshot_short_side: 720
+  screenshot_max_bytes: 204800   # 200 KB
+  jpeg_quality: 80
+  jpeg_min_quality: 35
+  device_side_screenshot: false  # true: compress on the phone with phone_helper (fallback: Mac)
+  helper_jar: ""                 # default: shuttle_server/phone_helper/shuttle-helper.jar
+  input_method: auto             # auto | clipboard | adbkeyboard | input_text
+  ui_dump_timeout_s: 20
+
+voice:
+  uplink_sample_rate: 16000
+  tts_sample_rate: 24000   # board codec runs at 24 kHz -> no resampling on the ESP32
+  frame_duration_ms: 60
+  tts_lead_frames: 5
+  min_utterance_ms: 400    # shorter presses are ignored (accidental taps)
+  max_utterance_s: 60
+  keepalive_s: 30          # keeps xiaozhi's 120 s channel timeout from firing
+  idle_close_s: 600        # close idle voice channel (saves ESP32 battery); 0 = never
+  cancel_on_new_utterance: true
+  vad_silence_ms: 800      # only for stock xiaozhi devices in "auto" listen mode
+  vad_threshold: 500
+
+asr:
+  provider: qwen           # qwen | mock
+  qwen:
+    base_url: http://127.0.0.1:8000/v1   # e.g. `vllm serve Qwen/Qwen3-ASR-1.7B --port 8000`
+    api: transcriptions    # transcriptions (/audio/transcriptions) | chat (/chat/completions + audio_url)
+    model: Qwen/Qwen3-ASR-1.7B
+    api_key: EMPTY
+    language: zh
+    prompt: ""
+    timeout_s: 60
+  mock:
+    text: 打开设置
+
+agent:
+  provider: simple         # simple (rule-based demo) | echo | command | python
+  max_steps: 15
+  step_delay_s: 1.0
+  timeout_s: 300
+  command:                 # your pi agent as a process; it uses $SHUTTLE_PHONE_API
+    argv: ["pi", "-p", "{instruction}"]
+    cwd: ""
+  python:                  # or your agent as a Python class implementing pipeline.agent.Agent
+    target: ""             # "my_pi_agent:PiAgent"
+    options: {}
+
+tts:
+  provider: say            # say (macOS) | mock (beeps) | openai | command
+  say:
+    voice: Tingting
+    rate: 200
+  openai:
+    base_url: http://127.0.0.1:8001/v1
+    model: tts-1
+    voice: alloy
+    api_key: EMPTY
+    timeout_s: 60
+  command:
+    argv: ["my-tts", "--text", "{text}", "--out", "{out}"]
+
+ota:
+  enabled: true            # answers the firmware's boot-time /xiaozhi/ota/ check
+  timezone_offset_min: 480
+  firmware_dir: ""         # put "<x.y.z>.bin" files here to push firmware over the air
+  expose_websocket_url: false
+
+phone_api:
+  enabled: true            # /api/phone/* (token) for external agents

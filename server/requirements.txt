@@ -1,0 +1,8 @@
+aiohttp>=3.9
+PyYAML>=6.0
+Pillow>=10.0
+# tests
+pytest>=8
+pytest-asyncio>=0.23
+# optional: tools/sim_device.py with a real microphone/speaker
+# sounddevice>=0.4
