@@ -38,6 +38,7 @@ public:
     void SetTaskState(const std::string& state, const std::string& text);
     void SetPhoneLink(bool ok, const std::string& detail);
     void SetServerLink(bool ok);
+    void SetHomeNetwork(bool home);  // home icon: phone reached through the router (fixed IP)
     void RequestFullRefresh();
 
 private:
@@ -59,6 +60,7 @@ private:
     std::string notification_;    // temporary notification shown instead of message_
     int64_t sticky_until_us_ = 0; // keep the task result on screen until this time
     int acting_steps_ = 0;
+    bool hint_shown_ = false;     // message_ currently holds an idle hint
     bool phone_ok_ = false;
     std::string phone_detail_ = "手机未连接";
     int last_battery_pct_ = -100;

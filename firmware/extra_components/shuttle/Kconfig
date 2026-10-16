@@ -39,41 +39,42 @@ config SHUTTLE_SKIP_OTA_CHECK
 endmenu
 
 menu "Wi-Fi networks (priority order: 1 = highest)"
+    comment "Each network says how to reach the phone: PHONE_HOST empty = phone hotspot (the phone is the DHCP gateway); an IP = home/office router with the phone at that fixed IP; none = no ADB on this network."
+    comment "Typical: #1 home Wi-Fi (PHONE_HOST = phone's reserved IP), #2 phone hotspot (PHONE_HOST empty)."
 
 config SHUTTLE_WIFI1_SSID
-    string "Wi-Fi #1 SSID (phone hotspot recommended)"
+    string "Wi-Fi #1 SSID (e.g. home Wi-Fi)"
     default ""
 config SHUTTLE_WIFI1_PASSWORD
     string "Wi-Fi #1 password"
     default ""
 config SHUTTLE_WIFI1_PHONE_HOST
-    string "Wi-Fi #1 phone ADB host (empty = DHCP gateway)"
+    string "Wi-Fi #1 phone ADB host (empty = gateway/hotspot, IP = router mode, none)"
     default ""
     help
-        Address of the Android phone on this network. Leave empty when this SSID
-        is the phone's own hotspot: the DHCP gateway is the phone.
+        Router mode: the phone's fixed IP on this network (DHCP reservation in the router,
+        with "use device MAC" instead of a random MAC for this SSID on the phone).
+        Hotspot mode: leave empty - the DHCP gateway is the phone.
+        "none": never run the ADB bridge on this network.
 
 config SHUTTLE_WIFI2_SSID
-    string "Wi-Fi #2 SSID (e.g. home Wi-Fi)"
+    string "Wi-Fi #2 SSID (e.g. phone hotspot)"
     default ""
 config SHUTTLE_WIFI2_PASSWORD
     string "Wi-Fi #2 password"
     default ""
 config SHUTTLE_WIFI2_PHONE_HOST
-    string "Wi-Fi #2 phone ADB host (empty = DHCP gateway)"
+    string "Wi-Fi #2 phone ADB host (empty = gateway/hotspot, IP = router mode, none)"
     default ""
-    help
-        On a home router the gateway is NOT the phone: put the phone's (static or
-        DHCP-reserved) IP here, or "none" to disable the ADB bridge on this network.
 
 config SHUTTLE_WIFI3_SSID
-    string "Wi-Fi #3 SSID"
+    string "Wi-Fi #3 SSID (e.g. office Wi-Fi)"
     default ""
 config SHUTTLE_WIFI3_PASSWORD
     string "Wi-Fi #3 password"
     default ""
 config SHUTTLE_WIFI3_PHONE_HOST
-    string "Wi-Fi #3 phone ADB host (empty = DHCP gateway)"
+    string "Wi-Fi #3 phone ADB host (empty = gateway/hotspot, IP = router mode, none)"
     default ""
 
 config SHUTTLE_WIFI_TIER_TIMEOUT_S
@@ -82,9 +83,14 @@ config SHUTTLE_WIFI_TIER_TIMEOUT_S
     default 20
 
 config SHUTTLE_WIFI_ROAM_INTERVAL_S
-    int "Re-try higher-priority networks every N seconds while idle (0 = never)"
+    int "Look for a higher-priority network after N s while idle (0 = never)"
     range 0 86400
     default 300
+    help
+        While connected to a lower-priority network (e.g. the hotspot after coming home) and
+        idle, the device briefly tries the higher-priority ones (about TIER_TIMEOUT seconds
+        offline). The interval doubles after each miss, up to 1 hour, and resets when the
+        network changes. Double-click BOOT to check immediately.
 
 endmenu
 

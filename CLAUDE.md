@@ -100,8 +100,10 @@ server/phone_helper/build.sh                    # optional helper jar (needs And
 ## Debugging by layer
 
 1. **Wi-Fi** (serial `ShuttleWifi`, `WifiStation`, `ShuttleBoard`): "Network #n" list at boot,
-   "Trying higher-priority…", "Wi-Fi '<ssid>' ip=… gw=…". The gw is the phone on a hotspot.
-   Hotspot must be 2.4 GHz. Portal: BOOT ×3.
+   "Trying higher-priority…", "Wi-Fi '<ssid>' ip=… gw=…, phone via router(fixed ip)|hotspot(gateway)
+   -> <host>". Two modes per network (`PHONE_HOST`): router = phone at a fixed IP on the same
+   Wi-Fi (🏠 icon), hotspot = phone is the gateway. 2.4 GHz only. BOOT ×2 = switch to the best
+   network now, BOOT ×3 = portal.
 2. **ADB bridge** (serial `AdbBridge`; server `shuttle.adb.tunnel`; `/status` → `tunnels`):
    device states `connecting_server → connecting_phone → active`. HTTP 401 = token mismatch;
    `phone_unreachable` = no `adb tcpip 5555` / client isolation. On the Mac:

@@ -122,22 +122,43 @@ std::string GetStaIp() {
     return buf;
 }
 
-std::string ResolvePhoneHost(const std::string& ssid) {
+PhoneHostMode GetPhoneHostMode(const std::string& ssid) {
     for (const auto& n : GetConfiguredNetworks()) {
         if (n.ssid != ssid) {
             continue;
         }
         if (n.phone_host == "none") {
-            return "";
+            return PhoneHostMode::kDisabled;
         }
-        if (!n.phone_host.empty()) {
-            return n.phone_host;
-        }
-        break;
+        return n.phone_host.empty() ? PhoneHostMode::kGateway : PhoneHostMode::kFixed;
     }
-    // Unknown network (e.g. provisioned from the xiaozhi web portal) or empty
-    // phone_host: assume we are on the phone's hotspot -> phone is the gateway.
-    return GetStaGatewayIp();
+    return PhoneHostMode::kGateway;
+}
+
+const char* PhoneHostModeName(PhoneHostMode mode) {
+    switch (mode) {
+        case PhoneHostMode::kGateway: return "hotspot(gateway)";
+        case PhoneHostMode::kFixed: return "router(fixed ip)";
+        case PhoneHostMode::kDisabled: return "disabled";
+    }
+    return "?";
+}
+
+std::string ResolvePhoneHost(const std::string& ssid) {
+    switch (GetPhoneHostMode(ssid)) {
+        case PhoneHostMode::kDisabled:
+            return "";
+        case PhoneHostMode::kFixed:
+            for (const auto& n : GetConfiguredNetworks()) {
+                if (n.ssid == ssid) {
+                    return n.phone_host;
+                }
+            }
+            return "";
+        case PhoneHostMode::kGateway:
+        default:
+            return GetStaGatewayIp();
+    }
 }
 
 void ProvisionXiaozhiSettings() {

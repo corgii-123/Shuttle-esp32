@@ -3,17 +3,23 @@
 Voice-control an Android phone with a pocket ESP32. All AI runs on a Mac in another city.
 
 ```
-                       Mac server (unattended, other city)
+                         Mac server (unattended, other city)
                  ┌──────────────────────────────────────────────┐
   Cloudflare ◀───┤ cloudflared ─▶ shuttle-server :8765 (aiohttp) │
   Tunnel         │   /ws/ctrl  xiaozhi voice ─▶ ASR ─▶ Agent ─▶ TTS
   (wss, token)   │   /ws/adb   bytes ◀▶ 127.0.0.1:15555 ◀▶ native adb
                  └──────────────────────────────────────────────┘
-        ▲ Internet (through the phone's mobile data)
+        ▲ Internet
         │
-  ESP32-S3 e-paper (pocket) ── Wi-Fi ── Android phone (hotspot on, adb tcpip 5555)
-    BOOT = push-to-talk, ADB bridge  TCP gateway:5555 ⇄ /ws/adb
+  At home (router mode)                          Out (hotspot mode)
+  router ── Wi-Fi ── ESP32                       phone hotspot ── Wi-Fi ── ESP32
+     └──── Wi-Fi ── phone (fixed IP, :5555)      (phone = gateway, :5555, mobile data)
 ```
+
+The ESP32 only needs *some* 2.4 GHz Wi-Fi that reaches the Internet **and** the phone's
+adbd. Each configured network says where the phone is: a fixed IP (router mode) or "the
+gateway" (hotspot mode). Networks are tried in priority order; after coming home the device
+moves from the hotspot to home Wi-Fi by itself (or immediately on **BOOT double-click**).
 
 Contents: [1 Phone](#1-phone) · [2 Mac server](#2-mac-server) · [3 Cloudflare Tunnel](#3-cloudflare-tunnel-fixed-hostname) ·
 [4 Tailscale SSH](#4-tailscale-ssh-remote-maintenance) · [5 Unattended Mac](#5-unattended-mac) ·
@@ -27,19 +33,59 @@ Bring-up checklist and open risks: [../HANDOFF.md](../HANDOFF.md).
 
 1. Settings → About → tap *Build number* 7× → Developer options → **USB debugging ON**.
    (Xiaomi/MIUI/HyperOS: also *USB debugging (Security settings)* to allow input injection.)
-2. Hotspot: **2.4 GHz band** (the ESP32 has no 5 GHz), WPA2, note SSID/password.
-   Some phones turn the hotspot off when idle — disable that timeout.
-3. With USB to any computer that has adb:
+2. With USB to any computer that has adb:
    ```bash
    adb devices            # accept the RSA prompt on the phone
-   adb tcpip 5555         # adbd now also listens on TCP 5555 (until the phone reboots!)
+   adb tcpip 5555         # adbd now also listens on TCP 5555, on every network (until reboot!)
    ```
    **Repeat `adb tcpip 5555` after every phone reboot** (by design, manual step).
-4. The first time the Mac connects through the tunnel the phone asks *"Allow USB debugging?"*
-   for the Mac's key → tick *Always allow* → Allow. The e-paper shows "请在手机上授权" meanwhile.
+3. The first time the Mac connects through the tunnel the phone asks *"Allow USB debugging?"*
+   for the Mac's key → tick *Always allow* → Allow. The e-paper shows "请手机授权" meanwhile.
 
 No app is installed. Optional: [ADBKeyboard](https://github.com/senzhk/ADBKeyBoard) as a fallback
 for Chinese input if the clipboard method is blocked by your ROM.
+
+### 1.1 Router mode (home / office Wi-Fi)
+
+```
+Mac ⇄ Internet ⇄ home router ⇄ Wi-Fi ⇄ ESP32
+                      ⇅ Wi-Fi
+                    phone (fixed IP, adb tcpip 5555)
+```
+
+1. **Give the phone a fixed IP** — best in the router: *DHCP reservation / static lease* for the
+   phone's MAC (e.g. `192.168.1.50`). On the phone, open this Wi-Fi's settings → *Privacy* →
+   **Use device MAC** (Android randomises the MAC per network by default, which breaks the
+   reservation). Alternative: static IP in the phone's Wi-Fi settings.
+2. ESP32 and phone must be on the **same 2.4 GHz-reachable LAN** with no client isolation:
+   don't use a *guest* network or "AP isolation". Dual-band routers with one SSID are fine
+   (the phone may sit on 5 GHz, the ESP32 on 2.4 GHz — same LAN).
+3. Firmware: `CONFIG_SHUTTLE_WIFIn_PHONE_HOST="192.168.1.50"` for that SSID.
+4. Check from any computer on the same Wi-Fi: `adb connect 192.168.1.50:5555`.
+
+The phone must be **connected to this Wi-Fi** (not only running its hotspot). Many phones turn
+Wi-Fi client off while the hotspot is on — switch the hotspot off at home. If the phone is not
+reachable the e-paper says **连不上手机**.
+
+### 1.2 Hotspot mode (out)
+
+1. Hotspot on the **2.4 GHz band** (the ESP32 has no 5 GHz), WPA2. Disable "turn off hotspot
+   when idle".
+2. Firmware: `CONFIG_SHUTTLE_WIFIn_PHONE_HOST=""` for the hotspot SSID — the phone is the DHCP
+   gateway, nothing else to configure. Unreachable → e-paper says **ADB未开启** (no `adb tcpip`).
+
+### 1.3 Switching between them
+
+| Situation | What happens |
+|---|---|
+| Boot | tries Wi-Fi #1 (home) for 20 s, then every configured network by signal strength |
+| Leave home | home Wi-Fi drops → the device rescans and joins the hotspot (seconds once it is on) |
+| Come home (still on hotspot) | while idle it checks for home Wi-Fi after 5 min, then 10, 20 … up to 60 min (each check ≈20 s offline) |
+| **BOOT double-click** | check for a better network **now** (or rescan if offline) |
+| BOOT ×3 | Wi-Fi portal (AP `Shuttle-XXXX`, http://192.168.4.1) to add a network on the spot; portal networks count as hotspot mode and rank below Kconfig ones |
+
+The status bar shows a 🏠 icon in router mode. ADB keeps working across switches (adbd
+listens on all interfaces); the Mac's adb sees a short disconnect and reconnects.
 
 ## 2. Mac server
 
@@ -170,7 +216,7 @@ idf.py -p /dev/cu.usbmodem* flash monitor            # or: esptool.py write_flas
   (`merged-binary.bin` at 0x0). Add repository secrets `SHUTTLE_SERVER_URL`, `SHUTTLE_TOKEN`,
   `SHUTTLE_WIFI1_SSID/PASSWORD`… to get a ready-to-flash image (artifacts are visible to repo readers).
 * Wi-Fi can also be added at runtime: press BOOT 3× → AP `Shuttle-XXXX` → http://192.168.4.1.
-  Kconfig networks have priority over portal ones.
+  Kconfig networks have priority over portal ones; portal networks use hotspot mode.
 
 ### 6.3 Serial log
 
@@ -206,10 +252,11 @@ exactly the ESP32's job (ADB bridge + push-to-talk), so the whole chain is exerc
 
 | Symptom | Look at | Usual cause |
 |---|---|---|
-| e-paper "服务器不可达" | serial `AdbBridge` errors, `curl https://<host>/health` | wrong URL/token (HTTP 401 in serial log), tunnel down |
-| "手机ADB未开启" | serial `Phone ... unreachable` | `adb tcpip 5555` not done since phone reboot; hotspot client isolation |
-| "请在手机上授权" | `adb devices` on the Mac shows `unauthorized` | accept the RSA prompt on the phone |
-| "本网络无手机" | – | on home Wi-Fi with `PHONE_HOST="none"` |
+| e-paper "服务器断开" (☁̸ icon) | serial `AdbBridge` errors, `curl https://<host>/health` | wrong URL/token (HTTP 401 in serial log), tunnel down |
+| "ADB未开启" | serial `Phone ... unreachable` | `adb tcpip 5555` not done since phone reboot |
+| "请手机授权" | `adb devices` on the Mac shows `unauthorized` | accept the RSA prompt on the phone |
+| "连不上手机" (🏠 shown) | `adb connect <phone-ip>:5555` from a laptop on the same Wi-Fi | phone not on this Wi-Fi (hotspot still on?), IP changed (MAC randomisation), guest network / AP isolation |
+| "未配置手机" | – | network with `PHONE_HOST="none"` |
 | voice: nothing recognised | `shuttle.log` ASR lines, `/status` last_text | ASR endpoint down → try `asr.provider: mock` |
 | no sound | serial `Application` / `AudioService` | TTS failed (`shuttle.log`), volume 0 |
 | taps land in the wrong place | log line `tap (x,y) -> device (X,Y)` | agent used device coordinates; PhoneController expects screenshot pixels |

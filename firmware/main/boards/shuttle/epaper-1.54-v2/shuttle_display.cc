@@ -101,9 +101,21 @@ bool ShuttleDisplay::StickyActive() const { return esp_timer_get_time() < sticky
 
 void ShuttleDisplay::SetMessage(const std::string& text) {
     message_ = text;
+    hint_shown_ = false;
     if (notification_.empty()) {
         ui_.SetMessage(message_);
     }
+}
+
+// Idle message: what to do next, based on the phone link (subtitle says what is wrong).
+static const char* IdleHint(bool phone_ok, const std::string& detail) {
+    if (phone_ok) return kIdleHint;
+    if (detail == "ADB未开启") return "手机上执行 adb tcpip 5555";
+    if (detail == "连不上手机") return "手机没连这个 Wi-Fi？双击 BOOT 换网络";
+    if (detail == "请手机授权") return "在手机上点“允许 USB 调试”";
+    if (detail == "服务器断开") return "检查网络或服务器地址";
+    if (detail == "等待Wi-Fi") return "连三下 BOOT 可配置 Wi-Fi";
+    return kIdleHint;
 }
 
 void ShuttleDisplay::ShowIdle() {
@@ -112,8 +124,10 @@ void ShuttleDisplay::ShowIdle() {
     } else {
         ui_.SetMood(ShuttleUi::Mood::kOffline, "待命", phone_detail_.c_str());
     }
-    if (message_.empty()) {
-        SetMessage(kIdleHint);
+    // Replace the message only if it is empty or one of our own hints.
+    if (message_.empty() || hint_shown_) {
+        SetMessage(IdleHint(phone_ok_, phone_detail_));
+        hint_shown_ = true;
     }
 }
 
@@ -182,10 +196,7 @@ void ShuttleDisplay::OnNotificationTimer(void* arg) {
     auto* self = static_cast<ShuttleDisplay*>(arg);
     DisplayLockGuard lock(self);
     self->notification_.clear();
-    self->ui_.SetMessage(self->message_.empty() && (self->ui_.mood() == ShuttleUi::Mood::kIdle ||
-                                                    self->ui_.mood() == ShuttleUi::Mood::kOffline)
-                             ? kIdleHint
-                             : self->message_);
+    self->ui_.SetMessage(self->message_);
 }
 
 void ShuttleDisplay::SetEmotion(const char* emotion) {
@@ -296,6 +307,11 @@ void ShuttleDisplay::SetPhoneLink(bool ok, const std::string& detail) {
 void ShuttleDisplay::SetServerLink(bool ok) {
     DisplayLockGuard lock(this);
     ui_.SetServerConnected(ok);
+}
+
+void ShuttleDisplay::SetHomeNetwork(bool home) {
+    DisplayLockGuard lock(this);
+    ui_.SetHomeNetwork(home);
 }
 
 void ShuttleDisplay::RequestFullRefresh() { full_refresh_pending_ = true; }

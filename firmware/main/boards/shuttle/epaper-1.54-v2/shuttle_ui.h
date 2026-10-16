@@ -2,7 +2,7 @@
 // runs in the firmware and in the desktop renderer (tools/ui_sim) that produces previews.
 //
 // 200x200 layout
-//   y   0-18   status bar   wifi · phone · (cloud-off)      12:34        85% [battery]
+//   y   0-18   status bar   wifi·home·phone·(cloud-off)     12:34        85% [battery]
 //   y  24-84   mascot 78x60 (left)  |  title   "思考中"   (right column)
 //                                   |  subtitle "手机已连接"
 //   y  92      dotted divider
@@ -47,6 +47,7 @@ public:
     void SetBattery(int percent, bool charging);  // percent < 0: hide
     void SetWifiIcon(const char* icon);            // Material Symbols glyph, nullptr/"" = none
     void SetPhoneConnected(bool ok);
+    void SetHomeNetwork(bool home);  // house icon when the phone is reached via the router
     void SetServerConnected(bool ok);
 
     // Advance animations; called by an internal lv_timer (or manually by the simulator).
@@ -64,6 +65,7 @@ private:
     static void TimerCb(lv_timer_t* timer);
     void ShowFrame(int index);
     void SetText(lv_obj_t* label, const std::string& text);
+    void SetIcon(lv_obj_t* label, const char* icon);
     void ApplyFonts();
 
     Fonts fonts_{};
@@ -71,7 +73,9 @@ private:
     int width_ = 200;
     int height_ = 200;
 
+    lv_obj_t* left_icons_ = nullptr;  // flex row: wifi, home, phone, cloud-off
     lv_obj_t* wifi_label_ = nullptr;
+    lv_obj_t* home_label_ = nullptr;
     lv_obj_t* phone_label_ = nullptr;
     lv_obj_t* cloud_label_ = nullptr;
     lv_obj_t* clock_label_ = nullptr;

@@ -91,12 +91,17 @@ void ShuttleUi::Create(lv_obj_t* parent, int width, int height, const Fonts& fon
     }
 
     // ---- status bar ----
-    wifi_label_ = MakeLabel(parent, fonts.icon);
-    lv_obj_set_pos(wifi_label_, 4, kBarY);
-    phone_label_ = MakeLabel(parent, fonts.icon);
-    lv_obj_set_pos(phone_label_, 22, kBarY);
-    cloud_label_ = MakeLabel(parent, fonts.icon);
-    lv_obj_set_pos(cloud_label_, 40, kBarY);
+    // Left icons in a flex row so missing ones leave no gaps.
+    left_icons_ = MakeBox(parent, 4, kBarY, 78, 16);
+    lv_obj_set_flex_flow(left_icons_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(left_icons_, 4, 0);
+    wifi_label_ = MakeLabel(left_icons_, fonts.icon);
+    home_label_ = MakeLabel(left_icons_, fonts.icon);
+    phone_label_ = MakeLabel(left_icons_, fonts.icon);
+    cloud_label_ = MakeLabel(left_icons_, fonts.icon);
+    for (lv_obj_t* l : {home_label_, phone_label_, cloud_label_}) {
+        lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+    }
 
     clock_label_ = MakeLabel(parent, fonts.small);
     lv_obj_align(clock_label_, LV_ALIGN_TOP_MID, 0, kBarY);
@@ -181,7 +186,7 @@ void ShuttleUi::ApplyFonts() {
         lv_obj_set_style_text_font(battery_pct_, fonts_.small, 0);
     }
     if (fonts_.icon != nullptr) {
-        for (lv_obj_t* l : {wifi_label_, phone_label_, cloud_label_}) {
+        for (lv_obj_t* l : {wifi_label_, home_label_, phone_label_, cloud_label_}) {
             lv_obj_set_style_text_font(l, fonts_.icon, 0);
         }
     }
@@ -262,14 +267,27 @@ void ShuttleUi::SetBattery(int percent, bool charging) {
     lv_obj_align(battery_pct_, LV_ALIGN_TOP_RIGHT, -29, kBarY);
 }
 
-void ShuttleUi::SetWifiIcon(const char* icon) { SetText(wifi_label_, icon ? icon : ""); }
+void ShuttleUi::SetIcon(lv_obj_t* label, const char* icon) {
+    // Empty icons are hidden so the flex row closes the gap.
+    bool show = icon != nullptr && icon[0] != '\0';
+    SetText(label, show ? icon : "");
+    if (show) {
+        lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ShuttleUi::SetWifiIcon(const char* icon) { SetIcon(wifi_label_, icon); }
+
+void ShuttleUi::SetHomeNetwork(bool home) { SetIcon(home_label_, home ? MATERIAL_SYMBOLS_HOME : nullptr); }
 
 void ShuttleUi::SetPhoneConnected(bool ok) {
-    SetText(phone_label_, ok ? MATERIAL_SYMBOLS_PHONE : "");
+    SetIcon(phone_label_, ok ? MATERIAL_SYMBOLS_PHONE : nullptr);
 }
 
 void ShuttleUi::SetServerConnected(bool ok) {
-    SetText(cloud_label_, ok ? "" : MATERIAL_SYMBOLS_CLOUD_OFF);
+    SetIcon(cloud_label_, ok ? nullptr : MATERIAL_SYMBOLS_CLOUD_OFF);
 }
 
 void ShuttleUi::TimerCb(lv_timer_t* timer) {

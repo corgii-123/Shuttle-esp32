@@ -30,7 +30,7 @@ are what the panel shows (modulo e-paper contrast/ghosting).
 | Mood | When | Animation |
 |---|---|---|
 | 待命 (idle) | ready, phone connected | blinks every 90 s; becomes 休息中 (sleep) after 10 min |
-| 待命 (offline mascot) | phone / server link down — subtitle says why (ADB未开启, 请手机授权, 服务器断开…) | static |
+| 待命 (offline mascot) | phone / server link down — subtitle says why (ADB未开启, 连不上手机, 请手机授权, 服务器断开…), message says what to do | static |
 | 连接中 | voice channel opening, boot steps | eyes look around |
 | 录音中 | BOOT held | sound waves |
 | 思考中 | ASR / agent planning (server `status thinking`) | thought bubbles |

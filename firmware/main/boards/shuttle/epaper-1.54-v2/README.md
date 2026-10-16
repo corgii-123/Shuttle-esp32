@@ -7,7 +7,8 @@ Pins come from `../../waveshare/esp32-s3-epaper-1.54/config.h` (not copied).
 
 | Key | Action |
 |---|---|
-| BOOT hold | push-to-talk: record while held, send on release |
+| BOOT hold (≥0.25 s) | push-to-talk: record while held, send on release |
+| BOOT ×2 | switch to the best available Wi-Fi now (e.g. hotspot → home) |
 | BOOT click during boot | open Wi-Fi portal (upstream behaviour) |
 | BOOT ×3 | open Wi-Fi portal (AP `Shuttle-XXXX`, http://192.168.4.1) |
 | PWR long press | power off (unchanged from upstream) |

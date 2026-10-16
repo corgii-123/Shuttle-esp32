@@ -161,7 +161,7 @@ Unknown to stock xiaozhi; the Shuttle firmware handles them through the
 | event | fields | device behaviour |
 |---|---|---|
 | `status` | `state`: `thinking` \| `acting` \| `done` \| `error` \| `idle`; `text` (optional) | state bar 思考中 / 执行中 / 完成 / 错误 / 待命; `text` in the message area. thinking/acting stay up to 5 min, done/error 60 s, even if the device returns to idle |
-| `phone` | `adb`: `device` \| `unauthorized` \| `offline` \| `absent`; `link`: `none` \| `connecting` \| `connected` \| `unreachable` | bottom line, e.g. "请在手机上授权" |
+| `phone` | `adb`: `device` \| `unauthorized` \| `offline` \| `absent`; `link`: `none` \| `connecting` \| `connected` \| `unreachable` | idle subtitle + hint, e.g. "请手机授权" |
 | `ping` | – | nothing (resets xiaozhi's 120 s receive timeout) |
 
 E-paper state words: 连接中 (xiaozhi connecting), 录音中 (listening), 思考中, 执行中, 完成, 错误,

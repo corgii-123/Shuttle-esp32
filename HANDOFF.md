@@ -44,12 +44,19 @@ State at hand-off (written in a cloud environment **without** the board, the pho
      panel check: contrast of the 4-bpp CJK text after thresholding, ghosting of the inverted
      title pill, and whether mascot animations (0.6–1 s/frame partial refreshes) look smooth
      enough or should be slowed/disabled (`ShuttleUi::Timing`, `kAnims` intervals).
-4. **Wi-Fi priority** — `shuttle_wifi.cc`. esp-wifi-connect 3.3.1 connects to the strongest known
-   AP; we emulate priority by temporarily restricting SsidManager's list (NVS rewrite) and
-   restarting the station: boot tries #1 for 20 s; while idle on a lower network it retries
-   higher ones every 300 s (≈20 s outage if absent; skipped while ADB traffic flowed in the last
-   60 s). Portal-added SSIDs are kept in NVS `shuttle/extra_ssids`. The upstream "no Wi-Fi for
-   60 s → config portal" timeout is **not** used (portal only via BOOT×3 or when nothing is configured).
+4. **Wi-Fi priority / router + hotspot modes** — `shuttle_wifi.cc`, `shuttle_config.cc`.
+   Each Kconfig network carries `PHONE_HOST`: fixed IP = router mode (home Wi-Fi, phone at a
+   reserved IP), empty = hotspot mode (phone = DHCP gateway). esp-wifi-connect 3.3.1 connects to
+   the strongest known AP; we emulate priority by temporarily restricting SsidManager's list (NVS
+   rewrite, only while the station is stopped) and restarting the station: boot tries #1 for 20 s;
+   while idle on a lower network it retries higher ones after 300 s, doubling to 1 h while absent
+   (≈20 s offline per check; skipped while ADB traffic flowed in the last 60 s); **BOOT double-click**
+   checks immediately. Untested on hardware: real switching times, whether the 20 s offline
+   window disturbs anything, phones that cannot be Wi-Fi client while their hotspot is on.
+   Portal-added SSIDs are kept in NVS `shuttle/extra_ssids` (treated as hotspot mode). The upstream
+   "no Wi-Fi for 60 s → config portal" timeout is **not** used.
+   * BOOT gestures need PTT to start only after a 250 ms hold (`kPttHoldMs`): the first ~0.25 s
+     of speech can be cut if the user talks instantly — tune if needed.
 5. **Hardware facts taken from upstream, not measured** — `waveshare/esp32-s3-epaper-1.54/config.h`,
    cross-checked with waveshareteam/ESP32-S3-ePaper-1.54 V1/V2 examples (V1 and V2 differ only in
    flash/PSRAM; pins identical): ES8311 @ I2C SDA47/SCL48, I2S MCLK14 BCLK15 WS38 DIN16 DOUT45,
@@ -94,13 +101,15 @@ State at hand-off (written in a cloud environment **without** the board, the pho
    `sim_device.py --url wss://<host> --phone <gw>:5555 --say "打开设置"`.
    ✅ `/status` shows tunnel `active`, `adb devices` shows `127.0.0.1:15555 device`, the phone opens Settings, reply audio plays.
 4. **Shuttle firmware: Wi-Fi + ADB bridge** — fill `shuttle.local.conf`, `python build_shuttle.py`,
-   `idf.py flash monitor`. ✅ serial: `Wi-Fi '<hotspot>' ip=… gw=…`, `AdbBridge: State … -> active`;
+   `idf.py flash monitor`. Start with **router mode at home** (phone with a reserved IP on home
+   Wi-Fi; easiest to debug), then hotspot mode, then switching (leave/come home, BOOT ×2).
+   ✅ serial: `Wi-Fi '<ssid>' ip=… gw=…, phone via router(fixed ip) -> 192.168.1.50`, `AdbBridge: State … -> active`;
    Mac: `adb devices` → `device` (accept RSA prompt first time); e-paper bottom "手机已连接";
    `curl …/api/phone/screenshot` works through the ESP32. Measure screenshot latency.
 5. **Voice up/down** — hold BOOT, say "打开设置", release. ✅ server log `listen start/stop`,
    `utterance N ms`, ASR text; device plays the reply; e-paper 录音中 → 思考中 → 执行中 → 完成.
 6. **End-to-end** — multi-step commands, Chinese text input ("搜索 天气"), interrupting with a new
-   press, phone reboot (→ "手机ADB未开启" until `adb tcpip 5555`), Mac reboot/power cut (service
+   press, phone reboot (→ "ADB未开启" until `adb tcpip 5555`), Mac reboot/power cut (service
    back, device reconnects with backoff), hotspot off/on, home Wi-Fi fallback, 8 h idle (battery,
    ghosting, reconnects).
 

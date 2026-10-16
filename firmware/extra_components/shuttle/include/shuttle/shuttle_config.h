@@ -26,8 +26,17 @@ std::string GetCtrlUrl();  // <base>/ws/ctrl
 std::string GetAdbUrl();   // <base>/ws/adb
 std::string GetOtaUrl();   // http(s)://<host>[/prefix]/xiaozhi/ota/
 
+// How the phone is reached on a given network:
+//   kGateway  - phone hotspot: the phone is the DHCP gateway (phone_host empty)
+//   kFixed    - router / home Wi-Fi: phone at a fixed IP or hostname (phone_host set)
+//   kDisabled - no ADB bridge on this network (phone_host == "none")
+// Networks not in Kconfig (added via the Wi-Fi portal) are treated as kGateway.
+enum class PhoneHostMode { kGateway, kFixed, kDisabled };
+PhoneHostMode GetPhoneHostMode(const std::string& ssid);
+const char* PhoneHostModeName(PhoneHostMode mode);
+
 // Phone address for the network with this SSID. Returns "" when the bridge should not
-// run (unknown network with no gateway, or phone_host == "none").
+// run (kDisabled, or kGateway without an IP yet).
 std::string ResolvePhoneHost(const std::string& ssid);
 
 std::string GetStaGatewayIp();  // "" if not connected

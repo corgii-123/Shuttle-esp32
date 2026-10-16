@@ -140,10 +140,11 @@ int main(int argc, char** argv) {
     ShuttleUi ui;
     ui.Create(lv_screen_active(), kW, kH, {text, &font_noto_sans_basic_14_1, &font_material_symbols_14_1});
 
-    auto status_bar = [&](bool phone, bool server) {
+    auto status_bar = [&](bool phone, bool server, bool home = false) {
         ui.SetClock("09:41");
         ui.SetBattery(82, false);
         ui.SetWifiIcon(MATERIAL_SYMBOLS_WIFI);
+        ui.SetHomeNetwork(home);
         ui.SetPhoneConnected(phone);
         ui.SetServerConnected(server);
     };
@@ -203,6 +204,16 @@ int main(int argc, char** argv) {
     ui.SetMessage("检查网络或服务器地址");
     ui.SetBattery(15, false);
     Save("10_no_server");
+
+    status_bar(true, true, true);
+    ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "手机已连接");
+    ui.SetMessage("家里 Wi-Fi · 按住 BOOT 说话");
+    Save("12_home_wifi");
+
+    status_bar(false, true, true);
+    ui.SetMood(ShuttleUi::Mood::kOffline, "待命", "连不上手机");
+    ui.SetMessage("手机没连家里 Wi-Fi？双击 BOOT 换网络");
+    Save("13_home_no_phone");
 
     status_bar(true, true);
     ui.SetMood(ShuttleUi::Mood::kIdle, "待命", "手机已连接");

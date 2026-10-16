@@ -16,6 +16,8 @@
 namespace {
 constexpr EventBits_t kConnected = BIT0;
 constexpr EventBits_t kChanged = BIT1;
+constexpr EventBits_t kForce = BIT2;
+constexpr int kMaxRoamIntervalS = 3600;
 constexpr const char* kNvsNamespace = "shuttle";
 constexpr const char* kNvsExtrasKey = "extra_ssids";
 }  // namespace
@@ -237,6 +239,8 @@ void ShuttleWifi::Start(std::function<bool()> is_idle) {
 
 void ShuttleWifi::TaskEntry(void* arg) { static_cast<ShuttleWifi*>(arg)->Task(); }
 
+void ShuttleWifi::RequestBestNetwork() { xEventGroupSetBits(events_, kForce); }
+
 void ShuttleWifi::Task() {
     const int tier_timeout = CONFIG_SHUTTLE_WIFI_TIER_TIMEOUT_S;
     const int roam_interval = CONFIG_SHUTTLE_WIFI_ROAM_INTERVAL_S;
@@ -247,38 +251,65 @@ void ShuttleWifi::Task() {
         multiple = full_.size() > 1;
     }
     if (multiple) {
-        // Boot: prefer the top-priority network (normally the phone hotspot).
+        // Boot: prefer the top-priority network (e.g. home Wi-Fi when at home).
         TryTier(1, tier_timeout);
     } else {
         WifiManager::GetInstance().StartStation();
     }
 
     TickType_t last_attempt = xTaskGetTickCount();
+    int roam_wait_s = roam_interval;
+    std::string last_ssid;
     while (true) {
-        xEventGroupWaitBits(events_, kChanged, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-        if (roam_interval <= 0) {
-            continue;
-        }
+        EventBits_t bits = xEventGroupWaitBits(events_, kChanged | kForce, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
+        bool force = bits & kForce;
         if (!(xEventGroupGetBits(events_) & kConnected)) {
-            continue;  // the station keeps scanning the full list by itself
+            if (force) {
+                // Offline: rescan the full list now instead of waiting for the scan back-off.
+                ESP_LOGI(TAG, "Manual network check while offline -> rescan");
+                std::vector<Entry> full;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(mutex_);
+                    full = full_;
+                }
+                RestartStation(&full);
+            }
+            continue;  // otherwise the station keeps scanning the full list by itself
         }
         std::string ssid;
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             ssid = connected_ssid_;
         }
+        if (ssid != last_ssid) {  // new network: restart the roam schedule
+            last_ssid = ssid;
+            roam_wait_s = roam_interval;
+            last_attempt = xTaskGetTickCount();
+        }
         int prio = PriorityOf(ssid);
         if (prio == 0) {
+            if (force) {
+                ESP_LOGI(TAG, "Manual network check: already on the best network '%s'", ssid.c_str());
+            }
             continue;
         }
-        if (xTaskGetTickCount() - last_attempt < pdMS_TO_TICKS(roam_interval * 1000)) {
-            continue;
-        }
-        if (is_idle_ && !is_idle_()) {
-            continue;
+        if (!force) {
+            if (roam_interval <= 0) {
+                continue;
+            }
+            if (xTaskGetTickCount() - last_attempt < pdMS_TO_TICKS(roam_wait_s * 1000)) {
+                continue;
+            }
+            if (is_idle_ && !is_idle_()) {
+                continue;
+            }
         }
         last_attempt = xTaskGetTickCount();
-        ESP_LOGI(TAG, "On '%s' (priority #%d), checking for better networks", ssid.c_str(), prio + 1);
-        TryTier(prio, tier_timeout);
+        ESP_LOGI(TAG, "On '%s' (priority #%d), %s check for better networks", ssid.c_str(), prio + 1,
+                 force ? "manual" : "periodic");
+        if (!TryTier(prio, tier_timeout) && roam_interval > 0) {
+            roam_wait_s = std::min(roam_wait_s * 2, kMaxRoamIntervalS);
+            ESP_LOGI(TAG, "Next automatic check in %d s", roam_wait_s);
+        }
     }
 }
