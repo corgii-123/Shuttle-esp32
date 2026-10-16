@@ -1,0 +1,46 @@
+name: Server
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ["server/**", "tools/**", ".github/workflows/server.yml"]
+  pull_request:
+    paths: ["server/**", "tools/**", ".github/workflows/server.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y libopus0
+      - run: pip install -r server/requirements.txt
+      - run: cd server && python -m pytest -q
+
+  phone-helper:
+    # Builds the optional phone-side screenshot/clipboard helper (dex jar for app_process).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build shuttle-helper.jar with the runner's Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms"
+          server/phone_helper/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shuttle-helper-jar
+          path: server/shuttle_server/phone_helper/shuttle-helper.jar
+          if-no-files-found: error
