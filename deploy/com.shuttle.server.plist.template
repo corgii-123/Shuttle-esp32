@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Rendered by deploy/install.sh. Starts at boot (LaunchDaemon) or login (LaunchAgent),
+     restarts on crash (KeepAlive), throttled to one restart per 10 s. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shuttle.server</string>
+    @@USERNAME_BLOCK@@
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@PYTHON@@</string>
+        <string>-m</string>
+        <string>shuttle_server</string>
+        <string>--config</string>
+        <string>@@CONFIG@@</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@@SERVER_DIR@@</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>@@HOME@@</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Standard</string>
+    <!-- Only crashes/tracebacks end up here; the app log (rotated) is shuttle.log. -->
+    <key>StandardOutPath</key>
+    <string>@@LOG_DIR@@/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@LOG_DIR@@/launchd.err.log</string>
+</dict>
+</plist>

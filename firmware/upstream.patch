@@ -1,0 +1,100 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -10,4 +10,7 @@
+ idf_build_set_property(MINIMAL_BUILD ON)
+ 
+ set(PROJECT_VER "2.5.3")
++
++# SHUTTLE: project-owned components live outside components/ (ignored upstream).
++list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/extra_components")
+ project(xiaozhi)
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -454,6 +454,11 @@
+     set(BOARD_DIR "waveshare/esp32-s3-epaper-1.54")
+     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
+     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
++elseif(CONFIG_BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2)
++    # SHUTTLE: same hardware as waveshare/esp32-s3-epaper-1.54 (v2 build)
++    set(BOARD_DIR "shuttle/epaper-1.54-v2")
++    set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
++    set(BUILTIN_ICON_FONT font_material_symbols_20_4)
+ elseif(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_ePaper_3_97)
+     set(BOARD_DIR "waveshare/esp32-s3-epaper-3.97")
+     set(BUILTIN_TEXT_FONT font_noto_sans_basic_30_4)
+@@ -1094,6 +1099,10 @@
+ endif()
+ 
+ set(MAIN_PRIV_REQUIRES_EXTRA "")
++# SHUTTLE: board glue code depends on the shuttle component (extra_components/shuttle).
++# Unconditional: requirements are expanded before sdkconfig values are known. The
++# component's hooks are only enabled for the Shuttle board (SHUTTLE_ENABLE depends on it).
++list(APPEND MAIN_PRIV_REQUIRES_EXTRA shuttle)
+ if(CONFIG_XIAOZHI_NETWORK_ETHERNET AND CONFIG_XIAOZHI_ETH_PHY_IP101)
+     list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif__ip101)
+ endif()
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -437,6 +437,9 @@
+     config BOARD_TYPE_SEEED_STUDIO_SENSECAP_WATCHER
+         bool "Seeed Studio SenseCAP Watcher"
+         depends on IDF_TARGET_ESP32S3
++    config BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2
++        bool "Shuttle (Waveshare ESP32-S3-ePaper-1.54 V2 + ADB bridge)"
++        depends on IDF_TARGET_ESP32S3
+     config BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
+         bool "Spotpear ESP32-S3 1.28 Box"
+         depends on IDF_TARGET_ESP32S3
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -22,6 +22,11 @@
+ 
+ #define TAG "Application"
+ 
++#if CONFIG_SHUTTLE_ENABLE
++// SHUTTLE: implemented in main/boards/shuttle/*; handles Shuttle-specific server messages.
++bool ShuttleHandleIncomingJson(const cJSON* root);
++#endif
++
+ Application::Application() : notify_player_(audio_service_) {
+     event_group_ = xEventGroupCreate();
+ 
+@@ -383,7 +388,12 @@
+     CheckAssetsVersion();
+ 
+     // Check for new firmware version
++#if CONFIG_SHUTTLE_SKIP_OTA_CHECK
++    // SHUTTLE: server address/token come from Kconfig, OTA check is optional.
++    ota_->MarkCurrentVersionValid();
++#else
+     CheckNewVersion();
++#endif
+ 
+     // Initialize the protocol
+     InitializeProtocol();
+@@ -548,6 +558,13 @@
+ 
+     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
+ 
++#if CONFIG_SHUTTLE_ENABLE
++    // SHUTTLE: always use WebSocket (URL/token provisioned from Kconfig), even when
++    // the OTA check failed, so a temporarily unreachable server does not force MQTT.
++    if (true) {
++        protocol_ = std::make_unique<WebsocketProtocol>();
++    } else
++#endif
+     if (ota_->HasMqttConfig()) {
+         protocol_ = std::make_unique<MqttProtocol>();
+     } else if (ota_->HasWebsocketConfig()) {
+@@ -731,6 +748,11 @@
+             }
+ #endif
+         } else {
++#if CONFIG_SHUTTLE_ENABLE
++            if (ShuttleHandleIncomingJson(root)) {
++                return;
++            }
++#endif
+             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
+         }
+     });

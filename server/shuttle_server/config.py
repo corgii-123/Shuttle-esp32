@@ -22,6 +22,8 @@ class ServerConfig:
     host: str = "127.0.0.1"  # cloudflared connects locally; use 0.0.0.0 for LAN tests
     port: int = 8765
     public_url: str = ""  # e.g. wss://shuttle.example.com (informational, OTA)
+    ctrl_heartbeat_s: float = 30.0  # WS ping interval on /ws/ctrl (0 = off); xiaozhi answers pings
+    adb_heartbeat_s: float = 20.0  # WS ping interval on /ws/adb (0 = off)
 
 
 @dataclass

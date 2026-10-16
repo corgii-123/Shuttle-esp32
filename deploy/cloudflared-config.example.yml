@@ -1,0 +1,19 @@
+# Cloudflare Tunnel (fixed hostname) for Shuttle. Copy to ~/.cloudflared/config.yml.
+#   cloudflared tunnel login
+#   cloudflared tunnel create shuttle            # prints the tunnel UUID + writes credentials json
+#   cloudflared tunnel route dns shuttle shuttle.example.com
+#   sudo cloudflared --config ~/.cloudflared/config.yml service install   # launchd, starts at boot
+tunnel: <TUNNEL-UUID>
+credentials-file: /Users/<you>/.cloudflared/<TUNNEL-UUID>.json
+
+# WebSockets need no special option; keep connections alive through idle periods.
+originRequest:
+  connectTimeout: 10s
+  tcpKeepAlive: 30s
+  keepAliveTimeout: 90s
+  noHappyEyeballs: true
+
+ingress:
+  - hostname: shuttle.example.com
+    service: http://127.0.0.1:8765
+  - service: http_status:404

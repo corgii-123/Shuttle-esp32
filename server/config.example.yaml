@@ -7,6 +7,8 @@ server:
   host: 127.0.0.1          # cloudflared connects locally. 0.0.0.0 only for LAN tests.
   port: 8765
   public_url: wss://shuttle.example.com   # your Cloudflare Tunnel hostname (OTA links, docs)
+  ctrl_heartbeat_s: 30     # WebSocket ping on /ws/ctrl (0 = off)
+  adb_heartbeat_s: 20      # WebSocket ping on /ws/adb (0 = off)
 
 auth:
   token: change-me         # MUST equal CONFIG_SHUTTLE_TOKEN in the firmware

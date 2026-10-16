@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Every 5 minutes: if /health stops answering (process alive but wedged), restart the server. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shuttle.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@@REPO@@/deploy/healthcheck.sh</string>
+        <string>--restart</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SHUTTLE_HEALTH_URL</key>
+        <string>http://127.0.0.1:@@PORT@@/health</string>
+        <key>SHUTTLE_LAUNCHD_TARGET</key>
+        <string>@@LAUNCHD_TARGET@@</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>@@LOG_DIR@@/watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@LOG_DIR@@/watchdog.log</string>
+</dict>
+</plist>

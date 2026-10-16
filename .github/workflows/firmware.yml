@@ -48,6 +48,13 @@ jobs:
             python scripts/build.py shuttle/epaper-1.54-v2 -c config.local.json
             --name shuttle-epaper-1.54-v2 --language zh-CN
 
+      - name: Show resolved Shuttle config and warnings in Shuttle code
+        run: |
+          grep -E '^CONFIG_(SHUTTLE_|BOARD_TYPE_SHUTTLE|LWIP_TCP_(SND_BUF|WND)_DEFAULT|LANGUAGE_)' firmware/sdkconfig \
+            | sed -E 's/(TOKEN|PASSWORD)=.*/\1=***/'
+          grep -hE 'warning:' firmware/build/log/idf_py_std*_output_* 2>/dev/null \
+            | grep -E 'shuttle|extra_components' | sort -u || echo "no warnings in Shuttle code"
+
       - name: Collect binaries
         run: |
           mkdir -p out

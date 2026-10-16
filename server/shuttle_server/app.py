@@ -113,7 +113,7 @@ class ShuttleApp:
             version = int(request.headers.get("Protocol-Version", "1"))
         except ValueError:
             version = 1
-        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=4 * 1024 * 1024)
+        ws = web.WebSocketResponse(heartbeat=self.cfg.server.ctrl_heartbeat_s or None, max_msg_size=4 * 1024 * 1024)
         await ws.prepare(request)
         self.counters["ctrl_connections"] += 1
         session = CtrlSession(ws, self, device_id, request.headers.get("Client-Id", ""), version)
@@ -135,7 +135,7 @@ class ShuttleApp:
         self._auth(request)
         device_id = self._device_id(request)
         tunnel = self.tunnels.get_or_create(device_id)
-        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=16 * 1024 * 1024)
+        ws = web.WebSocketResponse(heartbeat=self.cfg.server.adb_heartbeat_s or None, max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
         self.counters["adb_connections"] += 1
         await tunnel.handle_ws(ws)
