@@ -53,7 +53,7 @@ private:
     void MergePortalNetworks();
     void ApplyList(const std::vector<Entry>& list);
     bool TryTier(int max_priority_exclusive, int timeout_s);
-    void RestartStation();
+    void RestartStation(const std::vector<Entry>* list);
 
     std::recursive_mutex mutex_;
     std::vector<Entry> extras_;

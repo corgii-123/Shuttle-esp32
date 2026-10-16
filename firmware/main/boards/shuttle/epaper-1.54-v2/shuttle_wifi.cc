@@ -181,14 +181,21 @@ void ShuttleWifi::OnWifiEvent(WifiEvent event, const std::string& data) {
     }
 }
 
-void ShuttleWifi::RestartStation() {
+void ShuttleWifi::RestartStation(const std::vector<Entry>* list) {
+    // SsidManager has no lock and WifiStation copies its list while handling scan results,
+    // so only rewrite the list while the station is stopped.
     auto& wifi = WifiManager::GetInstance();
     wifi.StopStation();
+    if (list != nullptr) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        ApplyList(*list);
+    }
     wifi.StartStation();
 }
 
 bool ShuttleWifi::TryTier(int max_priority_exclusive, int timeout_s) {
     std::vector<Entry> tier;
+    std::vector<Entry> full;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (const auto& e : full_) {
@@ -196,25 +203,25 @@ bool ShuttleWifi::TryTier(int max_priority_exclusive, int timeout_s) {
                 tier.push_back(e);
             }
         }
-        if (tier.empty()) {
-            return false;
-        }
-        ESP_LOGI(TAG, "Trying %d higher-priority network(s) for %ds (first: '%s')", (int)tier.size(), timeout_s,
-                 tier[0].ssid.c_str());
-        ApplyList(tier);
+        full = full_;
     }
+    if (tier.empty()) {
+        return false;
+    }
+    ESP_LOGI(TAG, "Trying %d higher-priority network(s) for %ds (first: '%s')", (int)tier.size(), timeout_s,
+             tier[0].ssid.c_str());
     xEventGroupClearBits(events_, kConnected);
-    RestartStation();
+    RestartStation(&tier);
     EventBits_t bits = xEventGroupWaitBits(events_, kConnected, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_s * 1000));
-    {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
-        ApplyList(full_);  // always restore so later scans/reconnects can use every network
-    }
     if (bits & kConnected) {
+        // Connected: the station does not scan now, so restoring the full list is safe and
+        // lets later reconnects use every network.
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        ApplyList(full);
         return true;
     }
     ESP_LOGI(TAG, "Higher-priority networks not available, falling back to full list");
-    RestartStation();
+    RestartStation(&full);
     return false;
 }
 

@@ -124,3 +124,17 @@ async def test_auth_required(server_factory, path):
             assert r.status == 401
         async with http.get(http_url, headers={"Authorization": "Bearer wrong"}) as r:
             assert r.status == 401
+
+
+async def test_offline_transport_is_reset(server_factory, fake_adb_env, monkeypatch):
+    monkeypatch.setenv("FAKE_ADB_STATE_OF", "offline")  # every adb-connected serial reports offline
+    srv = await server_factory(adb={"offline_reset_s": 0.5})
+    adbd, phone_port, _ = await start_fake_adbd()
+    async with aiohttp.ClientSession() as http:
+        bridge = AdbBridgeSim(http, srv.url, TOKEN, "dev-4", f"127.0.0.1:{phone_port}")
+        task = asyncio.create_task(bridge.run_forever())
+        await wait_for(lambda: any(c[:1] == ["disconnect"] for c in adb_calls(fake_adb_env)), 8)
+        tunnel = srv.shuttle.tunnels.tunnels["dev-4"]
+        assert tunnel.adb_state in ("offline", "absent")
+        task.cancel()
+    adbd.close()

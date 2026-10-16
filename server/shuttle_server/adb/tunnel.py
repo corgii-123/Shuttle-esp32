@@ -306,20 +306,26 @@ class AdbTunnel:
                 state = await self.adb.get_state(self.serial)
                 await self._set_adb_state(state)
                 if self.device_connected:
-                    if state in ("absent", "offline") and not self.paired:
-                        out = await self.adb.connect(self.serial)
-                        log.info("[%s] adb connect %s: %s", self.device_id, self.serial, out)
-                    if state == "offline" and self.paired:
+                    if state == "offline":
+                        # paired: transport wedged; unpaired: adb's own reconnect may have given up.
                         self._offline_since = self._offline_since or time.monotonic()
                         if time.monotonic() - self._offline_since > self.cfg.offline_reset_s:
                             log.warning("[%s] adb offline for %.0fs, resetting transport", self.device_id,
                                         self.cfg.offline_reset_s)
                             await self.adb.disconnect(self.serial)
-                            if self._session:
+                            if self.paired and self._session:
                                 await self._close_session(self._session, 4003, "adb offline reset")
                             self._offline_since = None
+                        elif not self.paired:
+                            out = await self.adb.connect(self.serial)
+                            log.info("[%s] adb connect %s: %s", self.device_id, self.serial, out)
                     else:
                         self._offline_since = None
+                        if state == "absent" and not self.paired:
+                            out = await self.adb.connect(self.serial)
+                            log.info("[%s] adb connect %s: %s", self.device_id, self.serial, out)
+                else:
+                    self._offline_since = None
             except AdbError as e:
                 log.warning("[%s] adb supervisor: %s", self.device_id, e)
             except asyncio.CancelledError:
