@@ -39,8 +39,11 @@ State at hand-off (written in a cloud environment **without** the board, the pho
    * Chinese strings (录音中/思考中/执行中/完成/手机已连接…) exist only in the **assets** "common"
      font (verified in xiaozhi-fonts `charsets/common.json`); flash the merged image. Server-side
      `glyph_push` (xiaozhi feature) is not implemented — rare characters in replies may be blank.
-   * Layout pixel positions (top bar 26 px, state bar 30–62, message 66–170, bottom 174–200)
-     assume the 20 px font; adjust after seeing it.
+   * UI = pixel-art mascot + state pill (`shuttle_ui.cc`, previews in `docs/ui/`, rendered by
+     `tools/ui_sim` with LVGL 9.5 + the real fonts + the driver's black/white threshold). On the
+     panel check: contrast of the 4-bpp CJK text after thresholding, ghosting of the inverted
+     title pill, and whether mascot animations (0.6–1 s/frame partial refreshes) look smooth
+     enough or should be slowed/disabled (`ShuttleUi::Timing`, `kAnims` intervals).
 4. **Wi-Fi priority** — `shuttle_wifi.cc`. esp-wifi-connect 3.3.1 connects to the strongest known
    AP; we emulate priority by temporarily restricting SsidManager's list (NVS rewrite) and
    restarting the station: boot tries #1 for 20 s; while idle on a lower network it retries

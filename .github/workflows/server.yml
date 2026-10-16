@@ -3,9 +3,9 @@ name: Server
 on:
   workflow_dispatch:
   push:
-    paths: ["server/**", "tools/**", ".github/workflows/server.yml"]
+    paths: ["server/**", "tools/**", "firmware/main/boards/shuttle/**", ".github/workflows/server.yml"]
   pull_request:
-    paths: ["server/**", "tools/**", ".github/workflows/server.yml"]
+    paths: ["server/**", "tools/**", "firmware/main/boards/shuttle/**", ".github/workflows/server.yml"]
 
 permissions:
   contents: read
@@ -44,3 +44,19 @@ jobs:
           name: shuttle-helper-jar
           path: server/shuttle_server/phone_helper/shuttle-helper.jar
           if-no-files-found: error
+
+  ui-preview:
+    # Renders the e-paper UI (firmware/main/boards/shuttle/epaper-1.54-v2/shuttle_ui.cc) on the
+    # desktop with LVGL 9.5 + the device fonts -> screenshots as an artifact.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install Pillow
+      - run: tools/ui_sim/run.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-preview
+          path: docs/ui/

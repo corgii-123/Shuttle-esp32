@@ -238,7 +238,7 @@ private:
             return;
         }
         if (!bridge_) {
-            display_->SetPhoneLink(false, "ADB 桥已关闭");
+            display_->SetPhoneLink(false, "ADB桥关闭");
             return;
         }
         auto st = bridge_->GetStatus();
@@ -246,23 +246,23 @@ private:
         bool phone_ok = false;
         std::string text;
         switch (st.state) {
-            case shuttle::LinkState::kDisabled: text = "本网络无手机"; break;
-            case shuttle::LinkState::kWaitingNetwork: text = "等待 Wi-Fi"; break;
+            case shuttle::LinkState::kDisabled: text = "未配置手机"; break;
+            case shuttle::LinkState::kWaitingNetwork: text = "等待Wi-Fi"; break;
             case shuttle::LinkState::kConnectingServer: text = "连接服务器"; break;
-            case shuttle::LinkState::kServerUnreachable: text = "服务器不可达"; break;
+            case shuttle::LinkState::kServerUnreachable: text = "服务器断开"; break;
             case shuttle::LinkState::kConnectingPhone:
                 server_ok = true;
                 text = "连接手机";
                 break;
             case shuttle::LinkState::kPhoneUnreachable:
                 server_ok = true;
-                text = "手机ADB未开启";
+                text = "ADB未开启";
                 break;
             case shuttle::LinkState::kActive:
                 server_ok = true;
                 phone_ok = true;
                 if (server_adb_state_ == "unauthorized") {
-                    text = "请在手机上授权";
+                    text = "请手机授权";
                 } else if (server_adb_state_ == "offline") {
                     text = "手机离线";
                     phone_ok = false;

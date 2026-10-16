@@ -25,7 +25,8 @@ Protocol spec: `docs/protocol.md`. Setup: `docs/README.md`.
 |---|---|---|
 | `firmware/` | ESP-IDF v6.1 project = vendored **xiaozhi-esp32** @ d7a1c05 + Shuttle additions | mostly upstream |
 | `firmware/extra_components/shuttle/` | Shuttle component: `Kconfig`, `shuttle_config` (settings, NVS provisioning, gateway IP), `adb_bridge` (TCP⇄WS bridge, PSRAM buffers, backoff) | **ours** |
-| `firmware/main/boards/shuttle/epaper-1.54-v2/` | board: `shuttle_board.cc` (PTT, battery, bridge, JSON hook), `shuttle_display.*` (e-paper UI), `shuttle_wifi.*` (priority Wi-Fi), `waveshare_bsp.cc` (includes upstream waveshare drivers) | **ours** |
+| `firmware/main/boards/shuttle/epaper-1.54-v2/` | board: `shuttle_board.cc` (PTT, battery, bridge, JSON hook), `shuttle_ui.*` (mascot UI, pure LVGL), `shuttle_display.*` (xiaozhi Display → UI mapping, e-paper refresh policy), `mascot_frames.h` (generated), `shuttle_wifi.*` (priority Wi-Fi), `waveshare_bsp.cc` (includes upstream waveshare drivers) | **ours** |
+| `tools/mascot/gen_mascot.py`, `tools/ui_sim/` | mascot pixel art → `mascot_frames.h`; desktop LVGL renderer of the real UI → `docs/ui/` (see `docs/ui/README.md`) | ours |
 | `firmware/build_shuttle.py`, `shuttle.local.conf(.example)`, `UPSTREAM.md`, `upstream.patch` | build wrapper, private settings, upstream sync notes | **ours** |
 | `firmware/main/**` (everything else), `scripts/`, `partitions/` … | xiaozhi upstream | **do not edit** (see below) |
 | `server/shuttle_server/` | Python 3.11+ aiohttp server | **ours** |
@@ -114,8 +115,10 @@ server/phone_helper/build.sh                    # optional helper jar (needs And
 5. **Agent / phone**: log `agent step …`, `tap (x,y) -> device (X,Y)`, `screenshot WxH … via mac|phone`.
    Call the phone API by hand (curl above). `agent.provider: echo` isolates voice from the phone.
 6. **TTS**: `TTS failed:` in the log; `tts.provider: mock` produces beeps.
-7. **E-paper** (serial `ShuttleDisplay`: "State: …", "Full refresh …"): every LVGL flush =
-   one partial refresh; full refresh every 40 partials / after tasks / every 30 min idle.
+7. **E-paper** (serial `ShuttleDisplay`: "Status: …", "Full refresh …"): every LVGL flush =
+   one partial refresh; full refresh every 40 partials / after tasks / every 30 min idle, never
+   during a mascot animation. Iterate on layout/art without hardware: `tools/ui_sim/run.sh`
+   renders the real `shuttle_ui.cc` to `docs/ui/screens.png`.
 
 ## Gotchas
 

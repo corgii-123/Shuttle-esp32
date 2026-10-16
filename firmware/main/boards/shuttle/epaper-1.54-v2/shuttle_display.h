@@ -1,15 +1,11 @@
-// Shuttle UI for the 200x200 black/white e-paper.
+// Shuttle e-paper display: xiaozhi Display interface -> ShuttleUi (mascot UI, shuttle_ui.h).
 //
-// Layout (y ranges in px):
-//   0-26    top bar   : Wi-Fi icon, phone icon + state, clock, battery % + icon
-//   30-62   state bar : big inverted label: 连接中 / 录音中 / 思考中 / 执行中 / 完成 / 错误 ...
-//   66-170  message   : user words / agent progress / final reply (wrapped, never scrolls)
-//   174-200 bottom bar: phone (ADB) link detail + server link
-//
-// The e-paper is refreshed by the upstream Waveshare driver with the partial-refresh
-// waveform on every LVGL flush. To keep refreshes rare, labels are only touched when their
-// text actually changes, nothing scrolls/animates, and a full (ghost-clearing) refresh is
-// done every N partial refreshes or when the device returns to idle after a task.
+// This class only *maps* events to the UI:
+//   xiaozhi device state (SetStatus)     -> mascot mood (连接中 / 录音中 / 播报中 / 待命 ...)
+//   server task status (SetTaskState)    -> 思考中 / 执行中 / 完成 / 出错了 + message
+//   ADB bridge / server link             -> status-bar icons + idle subtitle
+// and owns the e-paper refresh policy (partial refresh on every LVGL flush by the upstream
+// Waveshare driver; a ghost-clearing full refresh every N partials, never mid-animation).
 #pragma once
 
 #include <esp_timer.h>
@@ -17,6 +13,7 @@
 #include <string>
 
 #include "../../waveshare/esp32-s3-epaper-1.54/custom_lcd_display.h"
+#include "shuttle_ui.h"
 
 class ShuttleDisplay : public CustomLcdDisplay {
 public:
@@ -39,10 +36,8 @@ public:
     // Shuttle extensions (thread-safe)
     // state: thinking | acting | done | error | idle (server task progress)
     void SetTaskState(const std::string& state, const std::string& text);
-    // Phone / ADB link line, e.g. icon_ok=true, "手机已连接"
     void SetPhoneLink(bool ok, const std::string& detail);
     void SetServerLink(bool ok);
-    // Schedule a ghost-clearing full refresh at the next LVGL tick.
     void RequestFullRefresh();
 
 private:
@@ -50,30 +45,22 @@ private:
     static void OnRefreshTimer(lv_timer_t* timer);
     static void OnNotificationTimer(void* arg);
 
-    void SetLabelText(lv_obj_t* label, const std::string& text);
-    void SetStateText(const std::string& text);
-    void SetMessageText(const std::string& text);
-    void ApplyFonts();
+    ShuttleUi::Fonts CurrentFonts() const;
+    void ShowIdle();  // 待命 (or offline mascot when the phone link is down)
+    void SetMessage(const std::string& text);
     bool StickyActive() const;
 
-    lv_obj_t* top_bar_ = nullptr;
-    lv_obj_t* phone_icon_ = nullptr;
-    lv_obj_t* clock_label_ = nullptr;
-    lv_obj_t* battery_pct_label_ = nullptr;
-    lv_obj_t* state_bar_ = nullptr;
-    lv_obj_t* state_label_ = nullptr;
-    lv_obj_t* message_label_ = nullptr;
-    lv_obj_t* bottom_bar_ = nullptr;
-    lv_obj_t* link_label_ = nullptr;
-    lv_obj_t* server_icon_ = nullptr;
-
+    ShuttleUi ui_;
     lv_timer_t* refresh_timer_ = nullptr;
     esp_timer_handle_t shuttle_notification_timer_ = nullptr;
 
-    std::string task_state_;       // last server task state
-    std::string message_;          // current message area text (without notification)
-    std::string notification_;     // temporary notification shown instead of message_
-    int64_t sticky_until_us_ = 0;  // keep task state/message on idle until this time
+    std::string task_state_;      // last server task state
+    std::string message_;         // message area text (without notification)
+    std::string notification_;    // temporary notification shown instead of message_
+    int64_t sticky_until_us_ = 0; // keep the task result on screen until this time
+    int acting_steps_ = 0;
+    bool phone_ok_ = false;
+    std::string phone_detail_ = "手机未连接";
     int last_battery_pct_ = -100;
     int partial_refreshes_ = 0;
     int64_t last_full_refresh_us_ = 0;
