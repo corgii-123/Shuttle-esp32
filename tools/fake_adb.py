@@ -8,6 +8,7 @@ Env:
   FAKE_ADB_STATE  file remembering `adb connect`ed serials (default: /tmp/fake_adb_state.json)
   FAKE_ADB_SERIAL serial that is always "device" (default: fake-phone)
   FAKE_ADB_STATE_OF  state reported for connected serials (default: device; try unauthorized)
+  FAKE_ADB_SERIALNO / FAKE_ADB_MODEL  identity answered to getprop (default FAKE0001 / Fake Phone)
 """
 from __future__ import annotations
 
@@ -88,6 +89,13 @@ def shell(cmd: str) -> tuple[bytes, int]:
         return b"", 0
     if c.startswith("stat "):
         return b"", 1
+    if "getprop ro.serialno" in c:  # phone identification (several `;`-separated queries)
+        props = {
+            "getprop ro.serialno": os.environ.get("FAKE_ADB_SERIALNO", "FAKE0001"),
+            "getprop ro.product.manufacturer": "Shuttle",
+            "getprop ro.product.model": os.environ.get("FAKE_ADB_MODEL", "Fake Phone"),
+        }
+        return "".join(props.get(q.strip(), "") + "\n" for q in c.split(";")).encode(), 0
     if c.startswith(("input ", "monkey ", "am ", "getprop")):
         if c.startswith("monkey"):
             return b"Events injected: 1\n", 0

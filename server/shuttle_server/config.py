@@ -70,6 +70,19 @@ class PhoneConfig:
 
 
 @dataclass
+class PhonesConfig:
+    """Several phones: the ESP32 finds them (scan for adbd), the Mac recognises and picks one."""
+    state_file: str = "~/Library/Application Support/shuttle/phones.json"  # "" = memory only
+    # A phone that was never seen before shows up (someone just ran `adb tcpip 5555` on it):
+    # switch to it automatically when no task is running.
+    auto_switch_new: bool = True
+    voice_commands: bool = True  # "换手机" / "切换到<名字>" / "现在连的是哪台手机"
+    aliases: dict[str, str] = field(default_factory=dict)  # serial -> spoken name, e.g. {"R5CT...": "工作机"}
+    rescan_wait_s: float = 8.0  # "换手机" with one phone: ask the device to rescan, wait this long
+    avoid_after_fail_s: float = 120.0  # an unreachable / switched-off host is not picked again for this long
+
+
+@dataclass
 class VoiceConfig:
     uplink_sample_rate: int = 16000  # device mic (xiaozhi hello)
     tts_sample_rate: int = 24000  # downlink; matches the board's codec output rate
@@ -179,6 +192,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     adb: AdbConfig = field(default_factory=AdbConfig)
     phone: PhoneConfig = field(default_factory=PhoneConfig)
+    phones: PhonesConfig = field(default_factory=PhonesConfig)
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)

@@ -86,11 +86,18 @@ class CtrlSession:
         log.info("[%s] status %s %s", self.device_id, state, text)
         await self.send_json({"type": "shuttle", "event": "status", "state": state, "text": text})
 
+    @property
+    def busy(self) -> bool:
+        return self._listening or (self._task is not None and not self._task.done())
+
     async def send_phone_status(self) -> None:
         t = self.app.tunnels.find(self.device_id)
         adb_state = t.adb_state if t else ("device" if self.cfg.adb.fallback_serial else "absent")
         link = t.phone_link if t else "none"
-        await self.send_json({"type": "shuttle", "event": "phone", "adb": adb_state, "link": link})
+        msg: dict[str, Any] = {"type": "shuttle", "event": "phone", "adb": adb_state, "link": link}
+        if t is not None:
+            msg.update(name=t.phone.name if t.phone else "", host=t.current_host, phones=len(t.cands.hosts))
+        await self.send_json(msg)
 
     # ------------------------------------------------------------------ main loop
     async def run(self) -> None:
@@ -236,6 +243,14 @@ class CtrlSession:
                 await self.status("error", "没听清")
                 await self.speak("没听清，请再说一遍")
                 return
+            if self.cfg.phones.voice_commands:
+                answer = await self.app.phone_commands.handle_voice(text, self.device_id)
+                if answer is not None:
+                    self.last_reply = answer
+                    log.info("[%s] phone command '%s' -> '%s'", self.device_id, text, answer)
+                    await self.status("done", answer)
+                    await self.speak(answer)
+                    return
             await self.send_json({"type": "llm", "emotion": "thinking", "text": "🤔"})
             await self.status("thinking", text)
 

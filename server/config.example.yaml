@@ -43,6 +43,17 @@ phone:
   input_method: auto             # auto | clipboard | adbkeyboard | input_text
   ui_dump_timeout_s: 20
 
+# Several phones: the board finds every phone with `adb tcpip 5555` on its Wi-Fi, the Mac
+# recognises them (serial/model) and picks one. Switch by voice: "换手机", "切换到<名字>",
+# "现在连的是哪台手机"; or GET/POST /api/phones.
+phones:
+  state_file: "~/Library/Application Support/shuttle/phones.json"   # known phones; "" = memory only
+  auto_switch_new: true    # a never-seen phone appears (just ran adb tcpip) -> switch to it when idle
+  voice_commands: true
+  aliases: {}              # serial -> spoken name, e.g. {"R5CT1234ABC": "工作机", "3A121FDJG": "小米"}
+  rescan_wait_s: 8
+  avoid_after_fail_s: 120
+
 voice:
   uplink_sample_rate: 16000
   tts_sample_rate: 24000   # board codec runs at 24 kHz -> no resampling on the ESP32

@@ -3,17 +3,28 @@
 CONFIG_SHUTTLE_SERVER_URL="wss://shuttle.example.com"
 CONFIG_SHUTTLE_TOKEN="change-me-to-a-long-random-string"
 
-# Priority 1: the phone hotspot (2.4 GHz!). Phone = DHCP gateway, so leave PHONE_HOST empty.
-CONFIG_SHUTTLE_WIFI1_SSID="MyPhoneHotspot"
-CONFIG_SHUTTLE_WIFI1_PASSWORD="hotspot-password"
+# Wi-Fi list in priority order. Phones are found automatically on every network (the board
+# scans for adbd on :5555; the Mac recognises each phone and picks one), so PHONE_HOST stays
+# empty. Optional: PHONE_HOST="<ip>" = only that phone on this network, "none" = no ADB here.
+# All Wi-Fi must be 2.4 GHz (the ESP32-S3 has no 5 GHz).
+
+# Priority 1: home Wi-Fi (phones on the router)
+CONFIG_SHUTTLE_WIFI1_SSID="HomeWiFi"
+CONFIG_SHUTTLE_WIFI1_PASSWORD="home-password"
 CONFIG_SHUTTLE_WIFI1_PHONE_HOST=""
 
-# Priority 2: home Wi-Fi. The gateway is the router, so give the phone's LAN IP or "none".
-CONFIG_SHUTTLE_WIFI2_SSID="HomeWiFi"
-CONFIG_SHUTTLE_WIFI2_PASSWORD="home-password"
-CONFIG_SHUTTLE_WIFI2_PHONE_HOST="none"
+# Priority 2: the phone's hotspot (when out)
+CONFIG_SHUTTLE_WIFI2_SSID="MyPhoneHotspot"
+CONFIG_SHUTTLE_WIFI2_PASSWORD="hotspot-password"
+CONFIG_SHUTTLE_WIFI2_PHONE_HOST=""
+
+# Optional: a third network (office...)
+# CONFIG_SHUTTLE_WIFI3_SSID="Office"
+# CONFIG_SHUTTLE_WIFI3_PASSWORD="..."
 
 # Optional tuning
+# CONFIG_SHUTTLE_WIFI_ROAM_INTERVAL_S=300   # hotspot -> home auto switch check (doubles up to 1 h)
 # CONFIG_SHUTTLE_SKIP_OTA_CHECK=y
-# CONFIG_SHUTTLE_WIFI_ROAM_INTERVAL_S=300
 # CONFIG_SHUTTLE_ADB_RX_BUFFER_KB=256
+# CONFIG_SHUTTLE_PHONE_SCAN_INTERVAL_S=60   # look for new phones (0 = only when none is connected)
+# CONFIG_SHUTTLE_PHONE_SCAN_TIMEOUT_MS=700  # raise if a sleeping phone is missed

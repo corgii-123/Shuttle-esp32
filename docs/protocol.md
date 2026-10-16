@@ -52,26 +52,64 @@ one WebSocket. The Mac's native `adb` talks to the phone through this "cable".
 
 ```
 Mac adb server ──TCP──▶ 127.0.0.1:15555 ═══(server)═══ WS /ws/adb ═══ ESP32 ──TCP──▶ phone adbd :5555
-                         adb connect 127.0.0.1:15555                    phone = DHCP gateway of the hotspot
+                         adb connect 127.0.0.1:15555                    phone = found by scanning the Wi-Fi
 ```
 
 ### Frames
 
 * **Binary frames: raw ADB bytes**, both directions, arbitrary chunking (message boundaries
   carry no meaning). This is the only data path.
-* Text frames: optional small JSON control messages; receivers that do not understand them
-  ignore them.
-  * device → server: `{"type":"phone","state":"connected","detail":"192.168.43.1:5555"}` once the
-    phone TCP connection is up; `{"type":"phone","state":"unreachable","detail":"..."}` right
-    before closing with code 4001.
+* Text frames: small JSON control messages; receivers that do not understand them ignore them.
+
+| direction | message | meaning |
+|---|---|---|
+| device → server | `{"type":"hello","v":2,"ssid":"Home","ip":"192.168.1.23","gateway":"192.168.1.1","candidates":["192.168.1.50","192.168.1.77"],"last":"192.168.1.50","fixed":false}` | first frame of a session: the phones (adbd hosts) the device found on its Wi-Fi |
+| server → device | `{"type":"connect","host":"192.168.1.77","reason":"last used Pixel 8"}` | dial this phone (`{"type":"idle"}` = none of them: close, rescan) |
+| device → server | `{"type":"phone","state":"connected","host":"192.168.1.77","detail":"192.168.1.77:5555"}` | phone TCP connection is up (`unreachable` right before close 4001) |
+| server → device | `{"type":"phone_info","name":"Pixel 8","serial":"3A1…","host":"192.168.1.77"}` | the phone is identified (adb `getprop`); shown on the e-paper |
+| device → server | `{"type":"candidates","ssid":"Home","candidates":[…]}` | a background scan found a different set of phones |
+| server → device | `{"type":"rescan"}` | scan now (e.g. "换手机" with only one phone known) |
+| server → device | `{"type":"switch"}` + close **4005** | switch phone: reconnect immediately (no back-off) and send a new hello |
+
+A device without `hello` (older firmware) dials its own choice; the server then only learns
+the host from `phone/connected`. A device whose hello gets no answer within 3 s (older server)
+dials the last phone used on this SSID, else the gateway, else the first candidate.
+
+### Finding phones (device)
+
+`CONFIG_SHUTTLE_WIFIn_PHONE_HOST` empty (default) = **auto**: the device tries TCP `5555` on every
+address of its /24 (8 at a time, 700 ms connect timeout; first the phone in use, the last phone
+on this SSID, the gateway) and keeps the hosts whose port answers an ADB `CNXN` with
+`AUTH`/`CNXN`/`STLS` — that probe never shows a dialog on the phone. A full /24 takes ≤ ~25 s,
+the priority hosts well under 1 s. It rescans every `CONFIG_SHUTTLE_PHONE_SCAN_INTERVAL_S`
+(60 s; 15 s while nothing is found), when a phone becomes unreachable, and on `rescan`.
+`PHONE_HOST` = an IP: only that phone (no scan). `none`: no ADB on that network.
+
+### Choosing the phone (server, `adb/phones.py`)
+
+The server identifies every phone it talks to (`getprop ro.serialno`, model, `device_name`) and
+remembers it in `phones.state_file` (serial → name, last IP + SSID, last used). For each hello:
+
+1. a phone the user just asked for (voice / `POST /api/phones/select`)
+2. a **never-seen phone that just appeared** — someone ran `adb tcpip 5555` on it — unless a task
+   is running (`phones.auto_switch_new`); also triggered by a `candidates` update mid-session
+3. the pinned phone (last explicit "切换到…")
+4. the most recently used known phone
+5. the hotspot phone (gateway), the device's last phone, the first one found
+
+Hosts that were unreachable are avoided for
+`phones.avoid_after_fail_s`. Switching: the server sends `switch`, runs
+`adb disconnect 127.0.0.1:<port>` (so adb forgets the old phone's state) and closes with 4005; the
+device reconnects at once, the supervisor runs `adb connect` again and the new phone may ask
+"Allow USB debugging?" the first time.
 
 ### Session lifecycle (one WebSocket = one phone TCP connection = one ADB transport)
 
-1. Device has an IP → resolves the phone host (gateway, or `CONFIG_SHUTTLE_WIFIn_PHONE_HOST`).
-2. Device opens `/ws/adb`. From now on server bytes are buffered in PSRAM
-   (`CONFIG_SHUTTLE_ADB_RX_BUFFER_KB`, default 256 KB).
+1. Device has an IP → scans for phones (above); nothing found → e-paper "未发现手机", no WebSocket.
+2. Device opens `/ws/adb`, sends `hello`, gets `connect`. From now on server bytes are buffered
+   in PSRAM (`CONFIG_SHUTTLE_ADB_RX_BUFFER_KB`, default 256 KB).
 3. Device connects TCP to `phone:5555` (5 s timeout).
-   * fails → text `phone/unreachable`, close **4001**, back off, go to 2.
+   * fails → text `phone/unreachable`, close **4001**, drop the host, rescan, back off, go to 2.
    * ok → text `phone/connected`, start pumping both ways.
 4. Server, on a new `/ws/adb` session: opens the local listener (`adb.local_port`, per
    Device-Id) if not open, and its supervisor runs `adb connect 127.0.0.1:<port>` whenever adb
@@ -89,7 +127,7 @@ Mac adb server ──TCP──▶ 127.0.0.1:15555 ═══(server)═══ WS 
 9. Device gone for `adb.device_grace_s` (60 s) → listener closed, `adb disconnect 127.0.0.1:<port>`.
 
 Close codes: 1000 normal, 4000 replaced by a newer session, 4001 phone unreachable,
-4002 adb reconnected, 4003 adb offline reset.
+4002 adb reconnected, 4003 adb offline reset, 4005 switch phone (reconnect now).
 
 Authorization dialog: the first `adb connect` makes the phone show "Allow USB debugging?" for the
 Mac's adb key. Until accepted, `adb devices` shows `unauthorized` (also pushed to the e-paper).
@@ -161,7 +199,7 @@ Unknown to stock xiaozhi; the Shuttle firmware handles them through the
 | event | fields | device behaviour |
 |---|---|---|
 | `status` | `state`: `thinking` \| `acting` \| `done` \| `error` \| `idle`; `text` (optional) | state bar 思考中 / 执行中 / 完成 / 错误 / 待命; `text` in the message area. thinking/acting stay up to 5 min, done/error 60 s, even if the device returns to idle |
-| `phone` | `adb`: `device` \| `unauthorized` \| `offline` \| `absent`; `link`: `none` \| `connecting` \| `connected` \| `unreachable` | bottom line, e.g. "请在手机上授权" |
+| `phone` | `adb`: `device` \| `unauthorized` \| `offline` \| `absent`; `link`: `none` \| `connecting` \| `connected` \| `unreachable`; `name`, `host`, `phones` (count found) | idle subtitle + hint, e.g. "请手机授权" |
 | `ping` | – | nothing (resets xiaozhi's 120 s receive timeout) |
 
 E-paper state words: 连接中 (xiaozhi connecting), 录音中 (listening), 思考中, 执行中, 完成, 错误,
@@ -216,6 +254,20 @@ Errors: 503 `{"ok":false,"error":"手机未连接…"}` when no phone, 400 for b
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/phone/screenshot -o s.jpg
 curl -H "Authorization: Bearer $TOKEN" -d '{"x":360,"y":800}' http://127.0.0.1:8765/api/phone/tap
 ```
+
+### Several phones — `/api/phones`
+
+| Method & path | Body | Effect |
+|---|---|---|
+| `GET /api/phones` | – | `{"current":{"host","phone":{serial,name,model,…}},"candidates":[{"host","name","serial","current","hotspot"}],"known":[…],"pinned"}` |
+| `POST /api/phones/select` | `{"serial":"…"}` or `{"name":"小米"}` or `{"host":"192.168.1.77"}`, `"pin":true` | switch to that phone (409 + message if it is not around) |
+| `POST /api/phones/next` | – | next phone the device found ("换手机") |
+| `POST /api/phones/rescan` | – | ask the device to scan now |
+
+The same by voice (handled before the agent, see `pipeline/phone_commands.py`): "换手机" /
+"下一台手机", "切换到<名字>" (only names of known phones; "切换到飞行模式" still goes to the agent),
+"现在连的是哪台手机" / "有哪些手机". Names come from the
+phone (`设置 → 关于手机 → 设备名称`, model) or `phones.aliases` in config.yaml.
 
 ## 5. `/health`
 

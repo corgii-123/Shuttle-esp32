@@ -92,7 +92,7 @@ async def test_adb_connection_without_device_is_closed(server_factory):
 async def test_phone_unreachable_reported(server_factory):
     srv = await server_factory()
     async with aiohttp.ClientSession() as http:
-        bridge = AdbBridgeSim(http, srv.url, TOKEN, "dev-2", "127.0.0.1:1")  # nothing listens on port 1
+        bridge = AdbBridgeSim(http, srv.url, TOKEN, "dev-2", "127.0.0.1:1", hello=False)  # nothing listens on port 1
         assert await bridge.run_once() is None
     tunnel = srv.shuttle.tunnels.tunnels["dev-2"]
     await wait_for(lambda: tunnel.phone_link == "unreachable")
