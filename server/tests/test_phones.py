@@ -12,7 +12,7 @@ from test_tunnel import start_fake_adbd, wait_for
 from shuttle_server.adb.adb_cli import AdbResult
 from shuttle_server.adb.phones import (IDENTIFY_CMD, Candidates, PhoneIdentity, PhoneRegistry, choose_host,
                                        next_host, parse_identity)
-from shuttle_server.pipeline.phone_commands import RE_NEXT, RE_SELECT, _only_names
+from shuttle_server.pipeline.phone_commands import RE_NEXT, RE_SELECT, PhoneCommands, _only_names
 
 
 # ---------------------------------------------------------------------------- unit
@@ -88,6 +88,29 @@ def test_voice_patterns():
     assert m and _only_names(m.group(3), rec)
     m = RE_SELECT.match("用小米打开微信")
     assert m and not _only_names(m.group(3), rec)
+
+
+async def test_voice_commands_with_spoken_lead_ins():
+    """The ASR keeps lead-ins ("嗯，那…", "来哈，…"): still phone commands, not agent tasks."""
+    calls = []
+
+    class Commands(PhoneCommands):
+        def describe(self, t):
+            calls.append("describe")
+            return "ok"
+
+        async def next(self, t):
+            calls.append("next")
+            return {"message": "ok"}
+
+    cmds = Commands(app=None)
+    cmds._tunnel = lambda device_id: None
+    for text, want in (("嗯，那换一台手机吧。", "next"), ("来哈，换手机", "next"),
+                       ("哎，现在连的是哪台手机？", "describe"), ("好，有哪些手机？", "describe")):
+        calls.clear()
+        assert await cmds.handle_voice(text, "dev") == "ok", text
+        assert calls == [want], text
+    assert await cmds.handle_voice("嗯，那打开设置", "dev") is None  # an ordinary task
 
 
 # ---------------------------------------------------------------------------- end to end

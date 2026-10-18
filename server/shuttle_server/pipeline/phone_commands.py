@@ -25,6 +25,8 @@ RE_LIST = re.compile(rf"(有|找到|发现|附近)(了)?(哪些|几台|几个|�
 RE_WHICH = re.compile(rf"(哪|那)(一)?(台|个|部){_PHONE}|(连|用|控制)(的|着)(是)?(什么|啥){_PHONE}")
 RE_NEXT = re.compile(rf"^(请|帮我|给我)?(换|切换|切|轮换)(一下)?(到)?(一|另一|另外一|下一|别的|其他)?(个|台|部)?{_PHONE}(吧|呀|啊)?$"
                      rf"|^(请)?(下一|另一)(个|台|部){_PHONE}(吧)?$")
+# Spoken lead-ins the ASR keeps ("来哈，", "嗯，那", "哎，"), stripped before matching.
+RE_FILLER = re.compile(r"^(嗯|啊|哎|呃|诶|欸|喂|那个|那|好的|好|来哈|来|就是|现在)+")
 RE_SELECT = re.compile(r"^(请|帮我)?(切换到|切换成|切到|换到|换成|改用|改成|使用|用|连接到|连接|连到|连上|连)(.+)$")
 
 
@@ -49,7 +51,7 @@ class PhoneCommands:
 
     # ------------------------------------------------------------------ voice
     async def handle_voice(self, text: str, device_id: str) -> str | None:
-        t = norm(text)
+        t = RE_FILLER.sub("", norm(text))  # "嗯，那换一台手机吧" is still a phone command
         if not t or len(t) > 30:
             return None
         if RE_LIST.search(t) or RE_WHICH.search(t):
