@@ -46,7 +46,7 @@ jobs:
           path: firmware
           command: >-
             python scripts/build.py shuttle/epaper-1.54-v2 -c config.local.json
-            --name shuttle-epaper-1.54-v2 --language zh-CN
+            --name shuttle-epaper-1.54-v2 --language zh-CN --wake-word disabled
 
       - name: Show resolved Shuttle config and warnings in Shuttle code
         run: |

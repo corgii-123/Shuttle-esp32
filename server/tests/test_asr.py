@@ -49,7 +49,7 @@ async def test_qwen_transcriptions_and_chat():
         pcm = pcmlib.tone(200, 500, 16000)
         asr = QwenASR(QwenAsrConfig(base_url=base, api="transcriptions"))
         assert await asr.transcribe(pcm, 16000) == "打开微信"
-        assert seen == {"rate": 16000, "model": "Qwen/Qwen3-ASR-1.7B"}
+        assert seen == {"rate": 16000, "model": "mlx-community/Qwen3-ASR-1.7B-8bit"}
         await asr.close()
         asr = QwenASR(QwenAsrConfig(base_url=base, api="chat"))
         assert await asr.transcribe(pcm, 16000) == "回到桌面"

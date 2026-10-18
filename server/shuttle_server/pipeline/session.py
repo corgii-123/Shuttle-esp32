@@ -11,14 +11,17 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import struct
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
-from ..adb.phone import PhoneUnavailable
+from ..adb.adb_cli import AdbError
+from ..adb.phone import PhoneError, PhoneUnavailable
 from ..audio import pcm as pcmlib
 from ..audio.opus import OpusDecoder, OpusEncoder
 from .agent import AgentContext
@@ -27,6 +30,30 @@ if TYPE_CHECKING:
     from ..app import ShuttleApp
 
 log = logging.getLogger(__name__)
+
+
+FILLERS = set("嗯啊哦呃额唔哈喂诶欸噢呀哎嘿嗨")
+PUNCT = re.compile(r"[\s，。！？、,.!?~…·\-]+")
+
+
+def is_filler(text: str) -> bool:
+    """'嗯。' / '喂喂喂' / '啊？': nothing to act on."""
+    core = PUNCT.sub("", text)
+    return not core or all(c in FILLERS for c in core)
+
+
+def shorten_for_speech(text: str, max_chars: int) -> str:
+    """Long replies (a read-out list, a page of text) are cut for TTS at the last sentence or
+    clause end within max_chars; the screen still shows the whole reply."""
+    text = text.strip()
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    head = text[:max_chars]
+    for marks in ("。！？!?", "；;", "，,、："):
+        cut = max(head.rfind(m) for m in marks)
+        if cut >= max_chars // 2:
+            return head[:cut].rstrip() + "。"
+    return head + "。"
 
 
 class CtrlSession:
@@ -51,8 +78,12 @@ class CtrlSession:
         self._pcm = bytearray()
         self._voiced = False
         self._silence_ms = 0
+        self._packets = self._decode_errors = self._late_packets = 0
+        self._listen_started = time.monotonic()
+        self._first_packet_s = 0.0
 
         self._task: asyncio.Task | None = None  # utterance -> ASR -> agent -> TTS
+        self._agent_running = False  # inside agent.run() (abort cancels only then)
         self._tts_task: asyncio.Task | None = None
         self._send_lock = asyncio.Lock()
         self._last_activity = time.monotonic()
@@ -86,11 +117,20 @@ class CtrlSession:
         log.info("[%s] status %s %s", self.device_id, state, text)
         await self.send_json({"type": "shuttle", "event": "status", "state": state, "text": text})
 
+    @property
+    def busy(self) -> bool:
+        return self._listening or (self._task is not None and not self._task.done())
+
     async def send_phone_status(self) -> None:
+        """Tell the device how its phone is reached: link esp32 (its ADB bridge), mac (adb on the
+        Mac via USB/LAN, adb.fallback_serial) or none; adb = adb state of that serial. With a
+        tunnel also the phone's name, its address and how many phones the board found."""
+        adb_state, link = await self.app.phone_link(self.device_id)
+        msg: dict[str, Any] = {"type": "shuttle", "event": "phone", "adb": adb_state, "link": link}
         t = self.app.tunnels.find(self.device_id)
-        adb_state = t.adb_state if t else ("device" if self.cfg.adb.fallback_serial else "absent")
-        link = t.phone_link if t else "none"
-        await self.send_json({"type": "shuttle", "event": "phone", "adb": adb_state, "link": link})
+        if t is not None and link == "esp32":
+            msg.update(name=t.phone.name if t.phone else "", host=t.current_host, phones=len(t.cands.hosts))
+        await self.send_json(msg)
 
     # ------------------------------------------------------------------ main loop
     async def run(self) -> None:
@@ -134,8 +174,14 @@ class CtrlSession:
         elif mtype == "listen":
             await self._on_listen(msg)
         elif mtype == "abort":
-            log.info("[%s] abort (%s)", self.device_id, msg.get("reason", ""))
+            reason = msg.get("reason", "")
+            log.info("[%s] abort (%s)", self.device_id, reason)
             self._stop_tts()
+            if not reason and self._agent_running and self._task and not self._task.done():
+                # User abort (touch / button) while the agent works on the phone: stop it.
+                log.info("[%s] abort cancels the running agent task", self.device_id)
+                self._task.cancel()
+                await self.status("cancelled", "已取消")
         elif mtype == "mcp":
             log.debug("[%s] mcp from device: %.200s", self.device_id, data)
         else:
@@ -173,6 +219,9 @@ class CtrlSession:
             self._pcm = bytearray()
             self._voiced = False
             self._silence_ms = 0
+            self._packets = self._decode_errors = self._late_packets = 0
+            self._listen_started = time.monotonic()
+            self._first_packet_s = 0.0
         elif state == "stop":
             log.info("[%s] listen stop", self.device_id)
             self._finish_utterance()
@@ -181,7 +230,11 @@ class CtrlSession:
 
     async def _on_binary(self, data: bytes) -> None:
         if not self._listening:
+            self._late_packets += 1  # audio after "listen stop" (or before "start")
             return
+        self._packets += 1
+        if self._packets == 1:
+            self._first_packet_s = time.monotonic() - self._listen_started
         if self.version == 2 and len(data) >= 16:
             size = struct.unpack(">I", data[12:16])[0]
             data = data[16:16 + size]
@@ -191,6 +244,7 @@ class CtrlSession:
         try:
             chunk = self._decoder.decode(data, self.up_rate * 120 // 1000)
         except RuntimeError as e:
+            self._decode_errors += 1
             log.debug("[%s] opus decode error: %s", self.device_id, e)
             return
         self._pcm += chunk
@@ -215,6 +269,12 @@ class CtrlSession:
         self._listening = False
         pcm = bytes(self._pcm)
         self._pcm = bytearray()
+        # Audio ms ~= packets x frame ms; much less than the listening time = frames lost on
+        # the device (or a late first packet: microphone start-up).
+        log.info("[%s] utterance %d ms: %d packets in %.2f s (first after %.2f s), %d decode errors, "
+                 "%d packets outside listening", self.device_id, pcmlib.duration_ms(pcm, self.up_rate),
+                 self._packets, time.monotonic() - self._listen_started, self._first_packet_s,
+                 self._decode_errors, self._late_packets)
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = asyncio.create_task(self._process(pcm), name=f"utterance-{self.device_id}")
@@ -227,15 +287,27 @@ class CtrlSession:
             await self.status("idle")
             return
         t0 = time.monotonic()
+        wav_path = self._save_utterance(pcm)
         try:
-            await self.status("thinking", "识别中…")
+            await self.status("recognizing")
             text = await self.app.asr.transcribe(pcm, self.up_rate)
+            if wav_path:
+                log.info("[%s] utterance saved to %s", self.device_id, wav_path)
             self.last_text = text
             await self.send_json({"type": "stt", "text": text})
-            if not text:
+            if not text or is_filler(text):
+                log.info("[%s] nothing to do in %r", self.device_id, text)
                 await self.status("error", "没听清")
                 await self.speak("没听清，请再说一遍")
                 return
+            if self.cfg.phones.voice_commands:
+                answer = await self.app.phone_commands.handle_voice(text, self.device_id)
+                if answer is not None:
+                    self.last_reply = answer
+                    log.info("[%s] phone command '%s' -> '%s'", self.device_id, text, answer)
+                    await self.status("done", answer)
+                    await self.speak(answer)
+                    return
             await self.send_json({"type": "llm", "emotion": "thinking", "text": "🤔"})
             await self.status("thinking", text)
 
@@ -243,7 +315,11 @@ class CtrlSession:
                 phone=self.app.phone_for(self.device_id), report=self.status, device_id=self.device_id,
                 max_steps=self.cfg.agent.max_steps, step_delay_s=self.cfg.agent.step_delay_s,
                 phone_api_url=self.app.phone_api_url(self.device_id), phone_api_token=self.cfg.auth.token)
-            reply = await asyncio.wait_for(self.app.agent.run(text, ctx), self.cfg.agent.timeout_s)
+            self._agent_running = True
+            try:
+                reply = await asyncio.wait_for(self.app.agent.run(text, ctx), self.cfg.agent.timeout_s)
+            finally:
+                self._agent_running = False
             reply = (reply or "完成了").strip()
             self.last_reply = reply
             log.info("[%s] '%s' -> '%s' (%.1fs)", self.device_id, text, reply, time.monotonic() - t0)
@@ -254,8 +330,23 @@ class CtrlSession:
             raise
         except PhoneUnavailable as e:
             log.warning("[%s] %s", self.device_id, e)
-            await self.status("error", "手机未连接")
-            await self.speak("手机没有连接")
+            if e.state == "unauthorized":
+                await self.status("error", "请在手机上允许 USB 调试")
+                await self.speak("请在手机上允许USB调试")
+            elif e.state == "locked":
+                await self.status("error", "手机锁屏了，请先解锁")
+                await self.speak("手机锁着，请先解锁")
+            else:
+                await self.status("error", "手机未连接")
+                await self.speak("手机没有连接")
+        except AdbError as e:
+            log.warning("[%s] adb failed: %s", self.device_id, e)
+            await self.status("error", "手机连接异常")
+            await self.speak("手机连接出问题了")
+        except PhoneError as e:
+            log.warning("[%s] phone action failed: %s", self.device_id, e)
+            await self.status("error", str(e)[:40])
+            await self.speak("手机操作失败了")
         except asyncio.TimeoutError:
             await self.status("error", "执行超时")
             await self.speak("执行超时了")
@@ -264,13 +355,31 @@ class CtrlSession:
             await self.status("error", f"出错：{str(e)[:40]}")
             await self.speak("出错了")
 
+    def _save_utterance(self, pcm: bytes) -> str:
+        """Debug aid (voice.save_utterances_dir): keep what the device actually sent."""
+        d = self.cfg.voice.save_utterances_dir
+        if not d:
+            return ""
+        try:
+            path = Path(d).expanduser()
+            path.mkdir(parents=True, exist_ok=True)
+            f = path / f"{time.strftime('%Y%m%d-%H%M%S')}-{self.device_id.replace(':', '')}.wav"
+            f.write_bytes(pcmlib.wav_bytes(pcm, self.up_rate))
+            return str(f)
+        except OSError as e:
+            log.warning("[%s] cannot save utterance: %s", self.device_id, e)
+            return ""
+
     def _stop_tts(self) -> None:
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
 
     async def speak(self, text: str) -> None:
         self._stop_tts()
-        task = asyncio.create_task(self._speak(text))
+        spoken = shorten_for_speech(text, self.cfg.voice.max_spoken_chars)
+        if spoken != text:
+            log.info("[%s] speaking %d of %d chars", self.device_id, len(spoken), len(text))
+        task = asyncio.create_task(self._speak(spoken))
         self._tts_task = task
         try:
             await task
@@ -281,18 +390,26 @@ class CtrlSession:
             # only the TTS was aborted (device "abort" / new listen): not an error
 
     async def _speak(self, text: str) -> None:
+        # Announce first, synthesize while the device switches to "speaking". xiaozhi sets the
+        # state at once but clears its decode queue only after the display update of that state
+        # change (which can wait for an e-paper refresh): audio sent in between is dropped, which
+        # cut off the beginning of long replies. So audio starts tts_start_delay_s after "start".
+        announced = time.monotonic()
+        await self.send_json({"type": "tts", "state": "start"})
+        await self.send_json({"type": "tts", "state": "sentence_start", "text": text})
         try:
             pcm, rate = await self.app.tts.synthesize(text)
         except Exception as e:
             log.error("[%s] TTS failed: %s", self.device_id, e)
+            await self.send_json({"type": "tts", "state": "stop"})
             return
         pcm = pcmlib.resample(pcm, rate, self.down_rate)
         frame_samples = self.down_rate * self.frame_ms // 1000
         encoder = OpusEncoder(self.down_rate)
         packets = [encoder.encode(f, frame_samples) for f in pcmlib.frames(pcm, frame_samples)]
-        await self.send_json({"type": "tts", "state": "start"})
-        await self.send_json({"type": "tts", "state": "sentence_start", "text": text})
-        await asyncio.sleep(0.1)  # let the device switch to "speaking" before audio arrives
+        wait = self.cfg.voice.tts_start_delay_s - (time.monotonic() - announced)
+        if wait > 0:
+            await asyncio.sleep(wait)
         lead = self.cfg.voice.tts_lead_frames
         start = time.monotonic()
         try:

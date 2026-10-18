@@ -93,3 +93,22 @@ async def test_phone_side_screenshot_falls_back(phone):
     ctl.helper_jar = ctl.helper_jar.with_name("missing.jar")
     shot = await ctl.screenshot_info()
     assert shot.source == "mac"
+
+
+async def test_cut_off_screenshot_is_retried_then_reported(phone, monkeypatch):
+    phone, _ = phone
+    good = noisy_png(1080, 2400)
+    replies = [good[: len(good) // 3], good]  # first PNG cut off (phone waking up), then fine
+    calls = []
+
+    async def exec_out(serial, command, timeout_s=None):
+        calls.append(command)
+        return replies.pop(0) if replies else good[:100]
+
+    monkeypatch.setattr(phone.adb, "exec_out", exec_out)
+    shot = await phone.screenshot_info()
+    assert shot.device_width == 1080 and len(calls) == 2
+
+    replies.extend([good[:5000], good[:5000]])
+    with pytest.raises(PhoneError, match="图像不完整"):
+        await phone.screenshot_info()

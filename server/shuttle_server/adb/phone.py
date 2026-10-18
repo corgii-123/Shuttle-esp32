@@ -11,6 +11,7 @@ import io
 import logging
 import re
 import shlex
+import struct
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -30,10 +31,15 @@ DEFAULT_HELPER = Path(__file__).resolve().parent.parent / "phone_helper" / "shut
 HELPER_RETRY_AFTER_S = 600.0
 
 KEY_BACK, KEY_HOME, KEY_ENTER, KEY_APP_SWITCH, KEY_PASTE = 4, 3, 66, 187, 279
+ADB_IME = "com.android.adbkeyboard/.AdbIME"
 
 
 class PhoneUnavailable(RuntimeError):
-    """No phone reachable (no tunnel up and no adb.fallback_serial)."""
+    """No usable phone (no tunnel / fallback serial, or adb state is not "device")."""
+
+    def __init__(self, message: str, state: str = "absent"):
+        super().__init__(message)
+        self.state = state
 
 
 class PhoneError(RuntimeError):
@@ -74,6 +80,13 @@ class UiElement:
         return self.text or self.desc
 
 
+def _decode_image(data: bytes) -> Image.Image:
+    """Open and fully decode (a truncated PNG fails here instead of later)."""
+    img = Image.open(io.BytesIO(data))
+    img.load()
+    return img
+
+
 def compress_screenshot(png_or_image: bytes | Image.Image, short_side: int, max_bytes: int,
                         quality: int = 80, min_quality: int = 35) -> tuple[bytes, int, int]:
     """Scale so the short side is <= short_side, then JPEG-encode under max_bytes."""
@@ -103,10 +116,15 @@ def escape_input_text(text: str) -> str:
 
 
 class PhoneController:
-    def __init__(self, adb: AdbCli, serial: str | Callable[[], str | None], cfg: PhoneConfig):
+    def __init__(self, adb: AdbCli, serial: str | Callable[[], str | None], cfg: PhoneConfig,
+                 generation: Callable[[], int] | None = None):
         self.adb = adb
         self._serial = serial
         self.cfg = cfg
+        # Changes whenever another phone may now sit behind the same serial (127.0.0.1:15555
+        # after a phone switch): per-phone caches are dropped.
+        self._generation = generation
+        self._seen_generation = generation() if generation else 0
         self.helper_jar = Path(cfg.helper_jar).expanduser() if cfg.helper_jar else DEFAULT_HELPER
         self.last: Screenshot | None = None
         self._helper_pushed: set[str] = set()
@@ -118,15 +136,43 @@ class PhoneController:
     @property
     def serial(self) -> str:
         s = self._serial() if callable(self._serial) else self._serial
+        if self._generation is not None:
+            gen = self._generation()
+            if gen != self._seen_generation:
+                self._seen_generation = gen
+                self.reset()
         if not s:
             raise PhoneUnavailable("手机未连接（ESP32 ADB 隧道未建立，且未配置 adb.fallback_serial）")
         return s
+
+    def reset(self) -> None:
+        """Forget everything learned about the phone (size, helper pushed, last screenshot)."""
+        self.last = None
+        self._helper_pushed.clear()
+        self._helper_broken_until = 0.0
+        self._device_size.clear()
 
     async def is_ready(self) -> bool:
         try:
             return await self.adb.get_state(self.serial) == "device"
         except (PhoneUnavailable, AdbError):
             return False
+
+    async def ensure_ready(self) -> None:
+        """Raise PhoneUnavailable (with a reason the user can act on) unless adb says "device"."""
+        serial = self.serial
+        try:
+            state = await self.adb.get_state(serial)
+        except AdbError as e:
+            raise PhoneUnavailable(f"adb 不可用: {e}") from e
+        if state == "device":
+            return
+        reasons = {
+            "unauthorized": "手机未授权 USB 调试（请在手机上点“允许”）",
+            "offline": "手机 adb 离线",
+            "absent": "手机未连接",
+        }
+        raise PhoneUnavailable(f"{reasons.get(state, '手机状态 ' + state)} ({serial})", state)
 
     async def shell(self, command: str, timeout_s: float | None = None, check: bool = True) -> str:
         res = await self.adb.shell(self.serial, command, timeout_s=timeout_s)
@@ -184,15 +230,30 @@ class PhoneController:
 
     async def _screenshot_on_mac(self) -> Screenshot:
         t0 = time.monotonic()
-        png = await self.adb.exec_out(self.serial, "screencap -p", timeout_s=30)
-        if not png.startswith(b"\x89PNG"):
-            raise PhoneError(f"screencap returned no PNG ({len(png)} bytes): {png[:80]!r}")
-        img = Image.open(io.BytesIO(png))
-        dw, dh = img.size
-        jpeg, w, h = await asyncio.to_thread(
-            compress_screenshot, img, self.cfg.screenshot_short_side, self.cfg.screenshot_max_bytes,
-            self.cfg.jpeg_quality, self.cfg.jpeg_min_quality)
-        return Screenshot(jpeg, w, h, dw, dh, "mac", int((time.monotonic() - t0) * 1000))
+        error = ""
+        for attempt in range(2):
+            if attempt:
+                # Empty or cut-off PNG: seen on MIUI while the keyguard (secure window) is coming up
+                # and while a dozing phone wakes up. One retry.
+                await asyncio.sleep(0.7)
+            png = await self.adb.exec_out(self.serial, "screencap -p", timeout_s=30)
+            if not png:
+                error = "截屏失败：手机可能锁屏或正在显示安全页面"
+                continue
+            if not png.startswith(b"\x89PNG"):
+                raise PhoneError(f"screencap returned no PNG ({len(png)} bytes): {png[:80]!r}")
+            try:
+                img = await asyncio.to_thread(_decode_image, png)
+            except (OSError, SyntaxError, ValueError, EOFError, struct.error) as e:
+                log.warning("screencap PNG unreadable (%d bytes): %s", len(png), e)
+                error = f"截屏失败：图像不完整（{len(png) // 1024} KB）"
+                continue
+            dw, dh = img.size
+            jpeg, w, h = await asyncio.to_thread(
+                compress_screenshot, img, self.cfg.screenshot_short_side, self.cfg.screenshot_max_bytes,
+                self.cfg.jpeg_quality, self.cfg.jpeg_min_quality)
+            return Screenshot(jpeg, w, h, dw, dh, "mac", int((time.monotonic() - t0) * 1000))
+        raise PhoneError(error)
 
     async def _ensure_helper(self) -> None:
         serial = self.serial
@@ -296,6 +357,7 @@ class PhoneController:
                 if not ascii_ok:
                     raise PhoneError("input_method=input_text 不支持非 ASCII 字符")
                 await self.shell(f"input text {escape_input_text(text)}")
+                log.info("typed %d chars via input_text", len(text))
                 return "input_text"
             errors = []
             if method in ("auto", "clipboard"):
@@ -306,6 +368,7 @@ class PhoneController:
                     if "OK" not in out:
                         raise PhoneError(f"helper clip failed: {out.strip()[:200]}")
                     await self.shell(f"input keyevent {KEY_PASTE}")
+                    log.info("typed %d chars via clipboard + paste", len(text))
                     return "clipboard"
                 except (PhoneError, AdbError) as e:
                     errors.append(f"clipboard: {e}")
@@ -314,15 +377,66 @@ class PhoneController:
             if method in ("auto", "adbkeyboard"):
                 pkgs = await self.shell("pm list packages com.android.adbkeyboard", check=False)
                 if "com.android.adbkeyboard" in pkgs:
+                    # ADBKeyboard only receives the broadcast while it is the active IME:
+                    # switch to it for this input, then restore the user's keyboard.
+                    previous = (await self.shell("settings get secure default_input_method", check=False)).strip()
+                    if previous != ADB_IME:
+                        await self.shell(f"ime enable {ADB_IME}", check=False)
+                        await self.shell(f"ime set {ADB_IME}", check=False)
+                        await asyncio.sleep(0.6)
                     b64 = base64.b64encode(text.encode("utf-8")).decode()
                     await self.shell(f"am broadcast -a ADB_INPUT_B64 --es msg {b64}")
+                    log.info("typed %d chars via ADBKeyboard", len(text))
+                    if previous and previous != ADB_IME and previous != "null":
+                        await asyncio.sleep(0.3)
+                        await self.shell(f"ime set {shlex.quote(previous)}", check=False)
                     return "adbkeyboard"
                 errors.append("adbkeyboard: not installed")
             raise PhoneError("无法输入中文: " + "; ".join(errors))
 
-    async def launch_app(self, package: str) -> None:
+    async def wake_and_unlock(self) -> bool:
+        """Turn the screen on and dismiss a swipe-only keyguard. False = still locked (PIN etc.)."""
+        power = await self.shell("dumpsys power | grep mWakefulness=", check=False)
+        if "Awake" not in power:
+            log.info("phone screen is off (%s), waking it", power.strip())
+            await self.keyevent(224)  # KEYCODE_WAKEUP
+            await asyncio.sleep(0.5)
+        if not await self._keyguard_showing():
+            return True
         async with self._lock:
-            await self.shell(f"monkey -p {shlex.quote(package)} -c android.intent.category.LAUNCHER 1")
+            await self.shell("wm dismiss-keyguard", check=False)
+        await asyncio.sleep(0.8)
+        locked = await self._keyguard_showing()
+        if locked:
+            log.info("keyguard still showing after dismiss-keyguard (secure lock?)")
+        return not locked
+
+    async def _keyguard_showing(self) -> bool:
+        out = await self.shell("dumpsys window | grep -E 'mDreamingLockscreen=|mShowingLockscreen=|isKeyguardShowing'",
+                               check=False)
+        return bool(re.search(r"(mDreamingLockscreen|mShowingLockscreen|isKeyguardShowing)=true", out))
+
+    async def launch_app(self, package: str) -> None:
+        pkg = shlex.quote(package)
+        async with self._lock:
+            out = await self.shell(f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1", check=False)
+            if "Events injected" in out:
+                return
+            # monkey can be blocked (e.g. MIUI without "USB debugging (Security settings)"):
+            # resolve the launcher activity and start it with am instead.
+            log.info("monkey could not launch %s (%s), trying am start", package, out.strip()[-120:])
+            resolved = await self.shell(
+                f"cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {pkg}", check=False)
+            component = resolved.strip().splitlines()[-1].strip() if resolved.strip() else ""
+            if "/" not in component:
+                raise PhoneError(f"无法启动 {package}: {out.strip()[-120:]}")
+            res = await self.shell(f"am start -n {shlex.quote(component)}", check=False)
+            if "Error" in res:
+                raise PhoneError(f"无法启动 {package}: {res.strip()[-120:]}")
+
+    async def installed_packages(self) -> set[str]:
+        out = await self.shell("pm list packages", timeout_s=20)
+        return {line[8:].strip() for line in out.splitlines() if line.startswith("package:")}
 
     async def current_app(self) -> str:
         out = await self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'", check=False)

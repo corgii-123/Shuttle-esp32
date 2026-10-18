@@ -8,6 +8,7 @@ Env:
   FAKE_ADB_STATE  file remembering `adb connect`ed serials (default: /tmp/fake_adb_state.json)
   FAKE_ADB_SERIAL serial that is always "device" (default: fake-phone)
   FAKE_ADB_STATE_OF  state reported for connected serials (default: device; try unauthorized)
+  FAKE_ADB_SERIALNO / FAKE_ADB_MODEL  identity answered to getprop (default FAKE0001 / Fake Phone)
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import sys
 import time
 
 W, H = 1080, 2400
+PACKAGES = ["com.android.settings", "com.android.launcher3", "com.tencent.mm", "com.taobao.taobao"]
 UI_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">
 <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.launcher3" content-desc="" clickable="false" bounds="[0,0][1080,2400]">
 <node index="1" text="设置" resource-id="com.android.launcher3:id/icon" class="android.widget.TextView" package="com.android.launcher3" content-desc="设置" clickable="true" bounds="[60,300][300,560]" />
@@ -71,8 +73,49 @@ def screencap_png() -> bytes:
     return buf.getvalue()
 
 
+BATTERY = """Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  Wireless powered: false
+  Charge counter: 3000000
+  status: 2
+  health: 2
+  level: 60
+  scale: 100
+  voltage: 4100
+  temperature: 305
+"""
+WIFI_STATUS = """Wifi is enabled
+==== Primary ClientModeManager instance ====
+Wifi is connected to "FakeNet"
+WifiInfo: SSID: "FakeNet", RSSI: -60, Link speed: 144Mbps, Frequency: 2437MHz
+"""
+DISKSTATS = """Data-Free: 50000000K / 100000000K total = 50% free
+App Size: 20000000000
+App Cache Size: 3000000000
+Photos Size: 5000000000
+Package Names: ["com.tencent.mm","com.android.settings"]
+App Sizes: [1000000000,0]
+App Data Sizes: [2000000000,0]
+Cache Sizes: [500000000,0]
+"""
+SEP = "@@SHUTTLE@@"
+
+
 def shell(cmd: str) -> tuple[bytes, int]:
     c = cmd.strip()
+    if SEP in c:  # several commands in one call (server phone_info): "(a) 2>/dev/null; echo SEP; (b) ..."
+        outs = []
+        for part in c.split(f"; echo {SEP}; "):
+            sub = part.strip().removesuffix(" 2>/dev/null").removeprefix("(").removesuffix(")")
+            outs.append(shell(sub.split("||")[0])[0].decode())
+        return f"\n{SEP}\n".join(outs).encode(), 0
+    if c == "dumpsys battery":
+        return BATTERY.encode(), 0
+    if c == "cmd wifi status":
+        return WIFI_STATUS.encode(), 0
+    if c == "dumpsys diskstats":
+        return DISKSTATS.encode(), 0
     if c.startswith("screencap"):
         return screencap_png(), 0
     if c.startswith("wm size"):
@@ -85,9 +128,17 @@ def shell(cmd: str) -> tuple[bytes, int]:
     if c.startswith("dumpsys window"):
         return b"  mCurrentFocus=Window{1a2b u0 com.android.launcher3/com.android.launcher3.Launcher}\n", 0
     if c.startswith("pm list packages"):
-        return b"", 0
+        flt = next((a for a in c.split()[3:] if not a.startswith("-")), "")
+        return "".join(f"package:{p}\n" for p in PACKAGES if flt in p).encode(), 0
     if c.startswith("stat "):
         return b"", 1
+    if "getprop ro.serialno" in c:  # phone identification (several `;`-separated queries)
+        props = {
+            "getprop ro.serialno": os.environ.get("FAKE_ADB_SERIALNO", "FAKE0001"),
+            "getprop ro.product.manufacturer": "Shuttle",
+            "getprop ro.product.model": os.environ.get("FAKE_ADB_MODEL", "Fake Phone"),
+        }
+        return "".join(props.get(q.strip(), "") + "\n" for q in c.split(";")).encode(), 0
     if c.startswith(("input ", "monkey ", "am ", "getprop")):
         if c.startswith("monkey"):
             return b"Events injected: 1\n", 0

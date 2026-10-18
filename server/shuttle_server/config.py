@@ -20,8 +20,9 @@ log = logging.getLogger(__name__)
 @dataclass
 class ServerConfig:
     host: str = "127.0.0.1"  # cloudflared connects locally; use 0.0.0.0 for LAN tests
-    port: int = 8765
+    port: int = 8780
     public_url: str = ""  # e.g. wss://shuttle.example.com (informational, OTA)
+    remote_api: bool = False  # serve /status and /api/* beyond this Mac (LAN, tunnel); token still needed
     ctrl_heartbeat_s: float = 30.0  # WS ping interval on /ws/ctrl (0 = off); xiaozhi answers pings
     adb_heartbeat_s: float = 20.0  # WS ping interval on /ws/adb (0 = off)
 
@@ -70,25 +71,41 @@ class PhoneConfig:
 
 
 @dataclass
+class PhonesConfig:
+    """Several phones: the ESP32 finds them (scan for adbd), the Mac recognises and picks one."""
+    state_file: str = "~/Library/Application Support/shuttle/phones.json"  # "" = memory only
+    # A phone that was never seen before shows up (someone just ran `adb tcpip 5555` on it):
+    # switch to it automatically when no task is running.
+    auto_switch_new: bool = True
+    voice_commands: bool = True  # "换手机" / "切换到<名字>" / "现在连的是哪台手机"
+    aliases: dict[str, str] = field(default_factory=dict)  # serial -> spoken name, e.g. {"R5CT...": "工作机"}
+    rescan_wait_s: float = 8.0  # "换手机" with one phone: ask the device to rescan, wait this long
+    avoid_after_fail_s: float = 120.0  # an unreachable / switched-off host is not picked again for this long
+
+
+@dataclass
 class VoiceConfig:
     uplink_sample_rate: int = 16000  # device mic (xiaozhi hello)
     tts_sample_rate: int = 24000  # downlink; matches the board's codec output rate
     frame_duration_ms: int = 60
     tts_lead_frames: int = 5  # frames sent ahead of real time
+    tts_start_delay_s: float = 0.8  # first audio frame this long after "tts start" (device switch-over)
     min_utterance_ms: int = 400
     max_utterance_s: int = 60
     keepalive_s: float = 30.0  # "shuttle ping" keeps xiaozhi's 120 s channel timeout away
     idle_close_s: float = 600.0  # close an idle ctrl channel (device re-opens on next press)
     cancel_on_new_utterance: bool = True
+    save_utterances_dir: str = ""  # debug: write every utterance as WAV here ("" = off)
+    max_spoken_chars: int = 60  # longer replies are cut at a sentence end before TTS (screen keeps all); 0 = off
     vad_silence_ms: int = 800  # only for listen mode "auto" (stock xiaozhi devices)
     vad_threshold: int = 500
 
 
 @dataclass
 class QwenAsrConfig:
-    base_url: str = "http://127.0.0.1:8000/v1"
+    base_url: str = "http://127.0.0.1:8765/v1"  # mlx-audio server; vLLM works too
     api: str = "transcriptions"  # transcriptions (/audio/transcriptions) | chat (/chat/completions)
-    model: str = "Qwen/Qwen3-ASR-1.7B"
+    model: str = "mlx-community/Qwen3-ASR-1.7B-8bit"
     api_key: str = "EMPTY"
     language: str = "zh"
     prompt: str = ""
@@ -122,13 +139,33 @@ class PythonAgentConfig:
 
 
 @dataclass
+class LlmAgentConfig:
+    # Any OpenAI-compatible /chat/completions server with tool calling (Splash, vLLM, llama.cpp ...).
+    base_url: str = "http://127.0.0.1:8000/v1"
+    model: str = ""  # empty = first model listed by GET /models
+    api_key: str = "EMPTY"
+    vision: str = "auto"  # auto (ask GET /models) | true | false (text-only: UI tree instead of screenshots)
+    ui_tree: str = "auto"  # also send uiautomator elements: auto (= only without vision) | true | false
+    coords: str = "norm1000"  # coordinate space the model uses: norm1000 (Qwen-VL, 0..1000) | pixel
+    temperature: float = 0.0
+    max_tokens: int = 512
+    timeout_s: float = 120.0
+    history_images: int = 1  # screenshots kept in the conversation; older ones become text
+    memory_turns: int = 3  # previous instructions/replies of this device given as context
+    reasoning_effort: str = ""  # sent as reasoning_effort when set (e.g. none|low|medium|high)
+    fast_launch: bool = True  # "打开<应用>" alone: launch directly, no LLM round trip
+    extra_prompt: str = ""  # appended to the system prompt
+
+
+@dataclass
 class AgentConfig:
-    provider: str = "simple"  # simple | echo | command | python
+    provider: str = "llm"  # llm | simple | echo | command | python
     max_steps: int = 15
-    step_delay_s: float = 1.0
+    step_delay_s: float = 0.8  # after each action, before the next screenshot (the model can also wait)
     timeout_s: float = 300.0
     command: CommandAgentConfig = field(default_factory=CommandAgentConfig)
     python: PythonAgentConfig = field(default_factory=PythonAgentConfig)
+    llm: LlmAgentConfig = field(default_factory=LlmAgentConfig)
 
 
 @dataclass
@@ -154,6 +191,7 @@ class CommandTtsConfig:
 @dataclass
 class TtsConfig:
     provider: str = "say"  # say | mock | openai | command
+    pitch_semitones: float = 0.0  # shift the voice (ffmpeg): +3..+5 sounds like a child
     say: SayTtsConfig = field(default_factory=SayTtsConfig)
     openai: OpenAiTtsConfig = field(default_factory=OpenAiTtsConfig)
     command: CommandTtsConfig = field(default_factory=CommandTtsConfig)
@@ -179,6 +217,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     adb: AdbConfig = field(default_factory=AdbConfig)
     phone: PhoneConfig = field(default_factory=PhoneConfig)
+    phones: PhonesConfig = field(default_factory=PhonesConfig)
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
@@ -191,6 +230,7 @@ class Config:
         d["auth"]["token"] = mask(self.auth.token)
         d["asr"]["qwen"]["api_key"] = mask(self.asr.qwen.api_key)
         d["tts"]["openai"]["api_key"] = mask(self.tts.openai.api_key)
+        d["agent"]["llm"]["api_key"] = mask(self.agent.llm.api_key)
         return d
 
 
@@ -236,6 +276,8 @@ def _coerce(value: Any, typ: Any, path: str) -> Any:
     if typ is str:
         if value is None:
             return ""
+        if isinstance(value, bool):  # YAML `vision: true` -> "true", not "True"
+            return "true" if value else "false"
         return str(value)
     return value
 
@@ -287,8 +329,15 @@ def load_config(path: str | os.PathLike[str] | None = None, env: dict[str, str] 
 def validate(cfg: Config) -> None:
     if cfg.asr.provider not in ("qwen", "mock"):
         raise ConfigError(f"asr.provider must be qwen|mock, got {cfg.asr.provider!r}")
-    if cfg.agent.provider not in ("simple", "echo", "command", "python"):
-        raise ConfigError(f"agent.provider must be simple|echo|command|python, got {cfg.agent.provider!r}")
+    if cfg.agent.provider not in ("simple", "echo", "command", "python", "llm"):
+        raise ConfigError(f"agent.provider must be simple|echo|command|python|llm, got {cfg.agent.provider!r}")
+    llm = cfg.agent.llm
+    if llm.vision not in ("auto", "true", "false"):
+        raise ConfigError("agent.llm.vision must be auto|true|false")
+    if llm.ui_tree not in ("auto", "true", "false"):
+        raise ConfigError("agent.llm.ui_tree must be auto|true|false")
+    if llm.coords not in ("norm1000", "pixel"):
+        raise ConfigError("agent.llm.coords must be norm1000|pixel")
     if cfg.tts.provider not in ("say", "mock", "openai", "command"):
         raise ConfigError(f"tts.provider must be say|mock|openai|command, got {cfg.tts.provider!r}")
     if cfg.asr.qwen.api not in ("transcriptions", "chat"):

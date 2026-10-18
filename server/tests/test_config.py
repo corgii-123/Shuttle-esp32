@@ -5,7 +5,7 @@ from shuttle_server.config import ConfigError, load_config
 
 def test_defaults_without_file():
     cfg = load_config(None, env={})
-    assert cfg.server.port == 8765
+    assert cfg.server.port == 8780
     assert cfg.phone.screenshot_max_bytes == 200 * 1024
     assert cfg.asr.provider == "qwen"
 

@@ -1,0 +1,323 @@
+#include "shuttle_ui.h"
+
+#include <material_symbols.h>
+
+#include "mascot_frames.h"
+
+namespace {
+
+struct MoodAnim {
+    const lv_image_dsc_t* const* frames;
+    int count;
+    uint32_t interval_ms;  // 0 = static
+    int first;             // frame shown when the mood starts (and kept if static)
+};
+
+#define ANIM(name, ms, first) \
+    {mascot_##name##_frames, (int)(sizeof(mascot_##name##_frames) / sizeof(mascot_##name##_frames[0])), ms, first}
+
+// Order matches ShuttleUi::Mood. Listening and speaking stay static: every animation frame is a
+// full LVGL render + e-paper refresh, and that CPU load starved the Opus encoder (dropped
+// microphone frames -> lost words) and would do the same to TTS decoding.
+const MoodAnim kAnims[] = {
+    ANIM(idle, 0, 0),          // blink handled separately
+    ANIM(sleep, 0, 0),
+    ANIM(connecting, 1000, 0),
+    ANIM(listening, 0, 1),     // two sound waves
+    ANIM(thinking, 900, 0),
+    ANIM(acting, 900, 0),
+    ANIM(speaking, 0, 1),      // mouth open
+    ANIM(done, 0, 0),
+    ANIM(error, 0, 0),
+    ANIM(offline, 0, 0),
+};
+
+constexpr uint32_t kBlinkMs = 450;
+constexpr uint32_t kTickMs = 200;
+
+constexpr int kMascotX = 2;
+constexpr int kRight = 4;            // right margin of the status row
+constexpr int kStatusY = 2;          // icon + battery row, top-right
+constexpr int kBubbleX = MASCOT_W + 8;
+constexpr int kBubbleY = 20;
+constexpr int kBubbleH = 58;         // two text lines (the CJK font's first line is ~31 px)
+constexpr int kMascotY = kBubbleY + (kBubbleH - MASCOT_H) / 2;
+constexpr int kDividerY = kBubbleY + kBubbleH + 5;
+constexpr int kTextX = 6;
+constexpr int kMessageY = kDividerY + 5;
+constexpr int kLineH = 24;           // text pitch: the CJK font's own line height is ~31 px
+constexpr int kLineSpace = -7;
+
+lv_obj_t* MakeLabel(lv_obj_t* parent, const lv_font_t* font) {
+    lv_obj_t* l = lv_label_create(parent);
+    lv_obj_set_style_text_color(l, lv_color_black(), 0);
+    if (font != nullptr) {
+        lv_obj_set_style_text_font(l, font, 0);
+    }
+    lv_label_set_text(l, "");
+    return l;
+}
+
+lv_obj_t* MakeBox(lv_obj_t* parent, int x, int y, int w, int h) {
+    lv_obj_t* o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_size(o, w, h);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+}
+
+}  // namespace
+
+void ShuttleUi::Create(lv_obj_t* parent, int width, int height, const Fonts& fonts) {
+    fonts_ = fonts;
+    width_ = width;
+    height_ = height;
+
+    lv_obj_set_style_bg_color(parent, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(parent, lv_color_black(), 0);
+    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    if (fonts.text != nullptr) {
+        lv_obj_set_style_text_font(parent, fonts.text, 0);
+    }
+
+    // ---- mascot (top-left): its mood is the state ----
+    mascot_ = lv_image_create(parent);
+    lv_obj_set_pos(mascot_, kMascotX, kMascotY);
+
+    // ---- status row, top-right: [wifi home phone cloud-off] 85% [battery] ----
+    battery_body_ = MakeBox(parent, width - kRight - 21, kStatusY + 3, 19, 10);
+    lv_obj_set_style_border_width(battery_body_, 1, 0);
+    lv_obj_set_style_border_color(battery_body_, lv_color_black(), 0);
+    lv_obj_set_style_radius(battery_body_, 2, 0);
+    battery_fill_ = MakeBox(battery_body_, 2, 2, 15, 6);
+    lv_obj_set_style_bg_color(battery_fill_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(battery_fill_, LV_OPA_COVER, 0);
+    battery_nub_ = MakeBox(parent, width - kRight - 2, kStatusY + 6, 2, 4);
+    lv_obj_set_style_bg_color(battery_nub_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(battery_nub_, LV_OPA_COVER, 0);
+    battery_pct_ = MakeLabel(parent, fonts.small);
+    lv_obj_align(battery_pct_, LV_ALIGN_TOP_RIGHT, -kRight - 24, kStatusY);
+
+    // Icons in a flex row (right-aligned, left of the battery) so missing ones leave no gaps.
+    icons_ = MakeBox(parent, width - kRight - 60 - 68, kStatusY, 68, 16);
+    lv_obj_set_flex_flow(icons_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(icons_, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(icons_, 3, 0);
+    wifi_label_ = MakeLabel(icons_, fonts.icon);
+    home_label_ = MakeLabel(icons_, fonts.icon);
+    phone_label_ = MakeLabel(icons_, fonts.icon);
+    cloud_label_ = MakeLabel(icons_, fonts.icon);
+    for (lv_obj_t* l : {home_label_, phone_label_, cloud_label_}) {
+        lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // ---- dotted divider ----
+    static lv_point_precise_t points[] = {{0, 0}, {0, 0}};
+    points[1].x = width - 2 * kTextX;
+    divider_ = lv_line_create(parent);
+    lv_line_set_points(divider_, points, 2);
+    lv_obj_set_pos(divider_, kTextX, kDividerY);
+    lv_obj_set_style_line_width(divider_, 1, 0);
+    lv_obj_set_style_line_color(divider_, lv_color_black(), 0);
+    lv_obj_set_style_line_dash_width(divider_, 2, 0);
+    lv_obj_set_style_line_dash_gap(divider_, 3, 0);
+
+    // ---- speech bubble next to the mascot: hint when idle, the user's words otherwise ----
+    bubble_ = MakeBox(parent, kBubbleX, kBubbleY, width - kBubbleX - kRight, kBubbleH);
+    lv_obj_set_style_border_width(bubble_, 1, 0);
+    lv_obj_set_style_border_color(bubble_, lv_color_black(), 0);
+    lv_obj_set_style_radius(bubble_, 8, 0);
+    lv_obj_set_style_pad_hor(bubble_, 5, 0);
+    lv_obj_set_style_pad_ver(bubble_, 1, 0);
+    // tail: a small notch pointing at the mascot
+    bubble_tail_ = lv_line_create(parent);
+    static lv_point_precise_t tail[] = {{6, 0}, {0, 5}, {6, 10}};
+    lv_line_set_points(bubble_tail_, tail, 3);
+    lv_obj_set_pos(bubble_tail_, kBubbleX - 6, kBubbleY + kBubbleH / 2 - 5);
+    lv_obj_set_style_line_width(bubble_tail_, 1, 0);
+    lv_obj_set_style_line_color(bubble_tail_, lv_color_black(), 0);
+    context_label_ = MakeLabel(bubble_, fonts.text);
+    lv_obj_set_size(context_label_, LV_PCT(100), kBubbleH - 2);
+    lv_obj_set_style_text_line_space(context_label_, kLineSpace + 1, 0);
+    lv_label_set_long_mode(context_label_, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_align(context_label_, LV_ALIGN_LEFT_MID, 0, 0);
+
+    message_label_ = MakeLabel(parent, fonts.text);
+    lv_label_set_long_mode(message_label_, LV_LABEL_LONG_MODE_DOTS);  // wrap + "..." when too long
+    lv_obj_set_style_text_line_space(message_label_, kLineSpace, 0);
+    Relayout();
+    SetContext("");
+
+    SetMood(Mood::kIdle);
+    SetBattery(-1, false);
+    timer_ = lv_timer_create(TimerCb, kTickMs, this);
+}
+
+void ShuttleUi::Relayout() {
+    int lines = (height_ - 2 - kMessageY) / kLineH;
+    lv_obj_set_pos(message_label_, kTextX, kMessageY);
+    lv_obj_set_size(message_label_, width_ - 2 * kTextX, lines * kLineH);
+}
+
+void ShuttleUi::SetFonts(const Fonts& fonts) {
+    fonts_ = fonts;
+    ApplyFonts();
+}
+
+void ShuttleUi::ApplyFonts() {
+    if (message_label_ == nullptr) {
+        return;
+    }
+    if (fonts_.text != nullptr) {
+        lv_obj_set_style_text_font(lv_obj_get_parent(message_label_), fonts_.text, 0);
+        lv_obj_set_style_text_font(context_label_, fonts_.text, 0);
+        lv_obj_set_style_text_font(message_label_, fonts_.text, 0);
+    }
+    if (fonts_.small != nullptr) {
+        lv_obj_set_style_text_font(battery_pct_, fonts_.small, 0);
+    }
+    if (fonts_.icon != nullptr) {
+        for (lv_obj_t* l : {wifi_label_, home_label_, phone_label_, cloud_label_}) {
+            lv_obj_set_style_text_font(l, fonts_.icon, 0);
+        }
+    }
+}
+
+void ShuttleUi::SetText(lv_obj_t* label, const std::string& text) {
+    if (label == nullptr) {
+        return;
+    }
+    const char* cur = lv_label_get_text(label);
+    if (cur != nullptr && text == cur) {
+        return;  // every change costs an e-paper refresh
+    }
+    lv_label_set_text(label, text.c_str());
+}
+
+void ShuttleUi::ShowFrame(int index) {
+    const MoodAnim& a = kAnims[static_cast<int>(mood_)];
+    if (index >= a.count) {
+        index = 0;
+    }
+    if (index != frame_) {
+        lv_image_set_src(mascot_, a.frames[index]);
+        frame_ = index;
+    }
+    last_frame_ms_ = lv_tick_get();
+}
+
+void ShuttleUi::SetMood(Mood mood) {
+    if (mood == mood_ && frame_ >= 0) {
+        return;
+    }
+    mood_ = mood;
+    frame_ = -1;
+    mood_since_ms_ = lv_tick_get();
+    ShowFrame(kAnims[static_cast<int>(mood)].first);
+}
+
+void ShuttleUi::SetContext(const std::string& text) {
+    if (text == context_ && bubble_shown_ == !text.empty()) {
+        return;
+    }
+    context_ = text;
+    SetText(context_label_, text);
+    bubble_shown_ = !text.empty();
+    for (lv_obj_t* o : {bubble_, bubble_tail_}) {
+        if (bubble_shown_) {
+            lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+void ShuttleUi::SetMessage(const std::string& text) {
+    message_ = text;
+    SetText(message_label_, text);
+}
+
+void ShuttleUi::SetBattery(int percent, bool charging) {
+    if (percent == battery_percent_) {
+        return;
+    }
+    battery_percent_ = percent;
+    bool show = percent >= 0;
+    for (lv_obj_t* o : {battery_body_, battery_nub_, battery_pct_}) {
+        if (show) {
+            lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (!show) {
+        return;
+    }
+    int p = percent > 100 ? 100 : percent;
+    int w = (15 * p + 50) / 100;
+    lv_obj_set_width(battery_fill_, w < 1 ? 1 : w);
+    SetText(battery_pct_, std::to_string(p) + (charging ? "+" : "%"));
+    lv_obj_align(battery_pct_, LV_ALIGN_TOP_RIGHT, -kRight - 24, kStatusY);
+}
+
+void ShuttleUi::SetIcon(lv_obj_t* label, const char* icon) {
+    // Empty icons are hidden so the flex row closes the gap.
+    bool show = icon != nullptr && icon[0] != '\0';
+    SetText(label, show ? icon : "");
+    if (show) {
+        lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ShuttleUi::SetWifiIcon(const char* icon) { SetIcon(wifi_label_, icon); }
+
+void ShuttleUi::SetHomeNetwork(bool home) { SetIcon(home_label_, home ? MATERIAL_SYMBOLS_HOME : nullptr); }
+
+void ShuttleUi::SetPhoneConnected(bool ok) { SetIcon(phone_label_, ok ? MATERIAL_SYMBOLS_PHONE : nullptr); }
+
+void ShuttleUi::SetServerConnected(bool ok) { SetIcon(cloud_label_, ok ? nullptr : MATERIAL_SYMBOLS_CLOUD_OFF); }
+
+void ShuttleUi::TimerCb(lv_timer_t* timer) {
+    static_cast<ShuttleUi*>(lv_timer_get_user_data(timer))->Tick(lv_tick_get());
+}
+
+void ShuttleUi::Tick(uint32_t now_ms) {
+    now_ms_ = now_ms;
+    uint32_t in_mood = now_ms - mood_since_ms_;
+    uint32_t since_frame = now_ms - last_frame_ms_;
+
+    if (mood_ == Mood::kIdle) {
+        animating_ = false;
+        if (timing_.sleep_after_ms > 0 && in_mood > timing_.sleep_after_ms) {
+            SetMood(Mood::kSleep);
+            return;
+        }
+        if (frame_ == 1 && since_frame >= kBlinkMs) {
+            ShowFrame(0);
+        } else if (frame_ == 0 && timing_.idle_blink_ms > 0 && since_frame >= timing_.idle_blink_ms) {
+            ShowFrame(1);
+        }
+        return;
+    }
+
+    const MoodAnim& a = kAnims[static_cast<int>(mood_)];
+    if (a.count < 2 || a.interval_ms == 0) {
+        animating_ = false;
+        return;
+    }
+    if (timing_.max_animation_ms > 0 && in_mood > timing_.max_animation_ms) {
+        if (frame_ != a.first) {
+            ShowFrame(a.first);
+        }
+        animating_ = false;
+        return;
+    }
+    animating_ = true;
+    if (since_frame >= a.interval_ms) {
+        ShowFrame((frame_ + 1) % a.count);
+    }
+}

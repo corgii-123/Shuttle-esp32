@@ -67,6 +67,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--conf", default=str(ROOT / "shuttle.local.conf"), help="private sdkconfig fragment")
     ap.add_argument("--language", default="zh-CN")
+    ap.add_argument("--wake-word", default="disabled",
+                    help="wake-word model (default: disabled, Shuttle is push-to-talk; see scripts/build.py)")
     ap.add_argument("--zip", action="store_true", help="also create releases/*.zip")
     ap.add_argument("--dry-run", action="store_true", help="only write config.local.json")
     args = ap.parse_args()
@@ -86,7 +88,7 @@ def main() -> None:
         return
 
     cmd = [sys.executable, str(ROOT / "scripts" / "build.py"), BOARD, "-c", LOCAL_JSON,
-           "--name", VARIANT, "--language", args.language]
+           "--name", VARIANT, "--language", args.language, "--wake-word", args.wake_word]
     if args.zip:
         cmd.append("--zip")
     print("[shuttle]", " ".join(cmd))

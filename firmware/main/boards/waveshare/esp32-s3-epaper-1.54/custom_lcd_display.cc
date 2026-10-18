@@ -177,7 +177,10 @@ void CustomLcdDisplay::spi_port_init() {
 void CustomLcdDisplay::read_busy() {
     int busy = lcd_spi_data.busy;
     while (gpio_get_level((gpio_num_t) busy) == 1) {
-        vTaskDelay(pdMS_TO_TICKS(5)); // LOW: idle, HIGH: busy
+        // SHUTTLE: sleep at least one tick. pdMS_TO_TICKS(5) is 0 at the default 100 Hz tick,
+        // which made this a busy loop holding a CPU core for every refresh (0.3 s partial,
+        // 2 s full) and starving the audio tasks.
+        vTaskDelay(pdMS_TO_TICKS(5) > 0 ? pdMS_TO_TICKS(5) : 1); // LOW: idle, HIGH: busy
     }
 }
 

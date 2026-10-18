@@ -44,6 +44,11 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 unload() {
   for label in com.shuttle.watchdog com.shuttle.server; do
     $SUDO launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
+    # bootout is asynchronous: an immediate bootstrap fails with "Input/output error".
+    for _ in $(seq 1 50); do
+      $SUDO launchctl print "$DOMAIN/$label" >/dev/null 2>&1 || break
+      sleep 0.2
+    done
   done
 }
 
@@ -70,7 +75,8 @@ if [[ $BREW == 1 ]]; then
 fi
 
 PY=""
-for c in python3.13 python3.12 python3.11 /opt/homebrew/bin/python3.12 python3; do
+UV_PY="$(command -v uv >/dev/null && uv python find 3.12 2>/dev/null || true)"
+for c in python3.13 python3.12 python3.11 /opt/homebrew/bin/python3.12 $UV_PY python3; do
   if command -v "$c" >/dev/null && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
     PY="$(command -v "$c")"; break
   fi
@@ -79,9 +85,15 @@ done
 
 say "Python venv ($PY -> $VENV)"
 [[ -d $VENV ]] || "$PY" -m venv "$VENV"
-"$VENV/bin/pip" install -q --upgrade pip
-"$VENV/bin/pip" install -q -r "$SERVER/requirements.txt"
-"$VENV/bin/python" -c "from shuttle_server.audio.opus import lib; lib(); print('libopus OK')" \
+# A venv made by `uv venv` has no pip: use uv for it (or bootstrap pip).
+if [[ ! -x "$VENV/bin/pip" ]] && command -v uv >/dev/null; then
+  uv pip install -q --python "$VENV/bin/python" -r "$SERVER/requirements.txt"
+else
+  [[ -x "$VENV/bin/pip" ]] || "$VENV/bin/python" -m ensurepip --upgrade >/dev/null
+  "$VENV/bin/pip" install -q --upgrade pip
+  "$VENV/bin/pip" install -q -r "$SERVER/requirements.txt"
+fi
+(cd "$SERVER" && "$VENV/bin/python" -c "from shuttle_server.audio.opus import lib; lib(); print('libopus OK')") \
   || echo "WARNING: libopus not loadable (brew install opus, or set SHUTTLE_LIBOPUS=/path/libopus.dylib)"
 
 say "Configuration ($CONFIG)"
@@ -100,7 +112,8 @@ if [[ ! -f $CONFIG ]]; then
 else
   echo "Keeping existing $CONFIG"
 fi
-"$VENV/bin/python" -m shuttle_server --config "$CONFIG" --check >/dev/null && echo "config OK"
+(cd "$SERVER" && "$VENV/bin/python" -m shuttle_server --config "$CONFIG" --check >/dev/null) && echo "config OK" \
+  || { echo "config check failed: (cd $SERVER && $VENV/bin/python -m shuttle_server --config $CONFIG --check)"; exit 1; }
 PORT="$("$VENV/bin/python" -c "import sys; sys.path.insert(0, '$SERVER'); from shuttle_server.config import load_config; print(load_config('$CONFIG').server.port)")"
 
 say "launchd ($MODE: $PLIST)"

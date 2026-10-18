@@ -14,7 +14,8 @@
 ```
 firmware/extra_components/shuttle/          ESP-IDF component (pure IDF, no xiaozhi deps)
   Kconfig                                   menuconfig: server, token, Wi-Fi list, bridge tuning
-  shuttle_config.cc / include/shuttle/*.h   config access, NVS provisioning, gateway IP
+  shuttle_config.cc / include/shuttle/*.h   config access, NVS provisioning, last phone per SSID
+  phone_scanner.cc                          finds phones (adbd on :5555) on the local /24
   adb_bridge.cc                             TCP(phone:5555) <-> WebSocket(/ws/adb) byte bridge
 firmware/main/boards/shuttle/epaper-1.54-v2/
   config.h / config.json / README.md        board identity; includes the waveshare config.h
@@ -36,6 +37,7 @@ All marked with `SHUTTLE:` comments. `upstream.patch` holds the exact diff.
 | `main/Kconfig.projbuild` | board choice `BOARD_TYPE_SHUTTLE_EPAPER_1_54_V2` (alphabetical, upstream test requires it) |
 | `main/CMakeLists.txt` | board → `BOARD_DIR` + fonts; `shuttle` added to main's requirements |
 | `main/application.cc` | 1) forward unknown JSON type `"shuttle"` to `ShuttleHandleIncomingJson()`; 2) always use WebSocket protocol; 3) optional skip of the OTA check (`CONFIG_SHUTTLE_SKIP_OTA_CHECK`) — all under `#if CONFIG_SHUTTLE_ENABLE`/`..._SKIP_OTA_CHECK` |
+| `main/boards/waveshare/esp32-s3-epaper-1.54/custom_lcd_display.cc` | `read_busy()` sleeps at least one tick: `pdMS_TO_TICKS(5)` is 0 at 100 Hz, so every e-paper refresh busy-looped a CPU core (0.3 s partial / 2 s full) and the Opus encoder dropped microphone frames |
 
 ## Updating to a newer upstream
 

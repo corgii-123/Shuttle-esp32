@@ -1,10 +1,16 @@
-// ADB pass-through: one TCP connection to the phone's adbd (<gateway>:5555) is spliced
+// ADB pass-through: one TCP connection to the phone's adbd (<phone>:5555) is spliced
 // byte-for-byte with one WebSocket connection to <server>/ws/adb. The ESP32 never
 // parses ADB; the Mac's native adb talks to the phone through this "long cable".
 //
 // Lifecycle (see docs/protocol.md):
-//   network up -> connect WS -> connect phone TCP -> pump bytes both ways
+//   network up -> scan for phones (PhoneScanner) -> connect WS -> hello{candidates}
+//   -> server answers connect{host} (or we pick: last / gateway / first after 3 s)
+//   -> connect phone TCP -> pump bytes both ways
 //   either side closes -> close the other -> back off -> reconnect (new WS session)
+//   server close code 4005 = "switch phone": reconnect immediately, ask again.
+// A background scan (CONFIG_SHUTTLE_PHONE_SCAN_INTERVAL_S) reports new phones on the open
+// session ({"type":"candidates"}), so the server can move to a phone that just ran
+// `adb tcpip 5555`.
 #pragma once
 
 #include <freertos/FreeRTOS.h>
@@ -18,8 +24,10 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "shuttle/backoff.h"
+#include "shuttle/phone_scanner.h"
 
 struct esp_websocket_client;
 
@@ -28,6 +36,8 @@ namespace shuttle {
 enum class LinkState {
     kDisabled,           // bridge disabled for the current network
     kWaitingNetwork,     // no Wi-Fi / no IP
+    kScanning,           // looking for phones (first scan on this network)
+    kNoPhone,            // scanned, no phone with `adb tcpip` found
     kConnectingServer,   // opening wss://.../ws/adb
     kConnectingPhone,    // WS up, connecting TCP to the phone
     kPhoneUnreachable,   // WS up but phone adbd refused/timeout (adb tcpip not run?)
@@ -39,7 +49,10 @@ const char* LinkStateName(LinkState state);
 
 struct AdbBridgeStatus {
     LinkState state = LinkState::kWaitingNetwork;
-    std::string phone_host;
+    std::string phone_host;  // host of the current / last session
+    std::string phone_name;  // from the server ({"type":"phone_info"}), "" until identified
+    std::string gateway;     // DHCP gateway (phone_host == gateway: the hotspot phone)
+    int phones_found = 0;    // candidates from the last scan
     uint64_t bytes_to_phone = 0;
     uint64_t bytes_from_phone = 0;
     uint32_t sessions = 0;
@@ -61,41 +74,59 @@ public:
         int pong_timeout_s = 30;
     };
 
-    // Returns the phone host to dial right now, or "" if the bridge must stay idle.
-    using HostResolver = std::function<std::string()>;
+    // How to find the phone on the current network.
+    struct Target {
+        enum class Mode { kAuto, kFixed, kDisabled } mode = Mode::kDisabled;
+        std::string fixed_host;  // kFixed
+        std::string ssid;
+    };
+    using TargetResolver = std::function<Target()>;
     // Called from the bridge task whenever the status changes. Keep it short.
     using StatusCallback = std::function<void(const AdbBridgeStatus&)>;
 
     static Config DefaultConfig();  // from Kconfig + shuttle_config
 
-    AdbBridge(Config config, HostResolver resolver);
+    AdbBridge(Config config, TargetResolver resolver);
     ~AdbBridge();
     AdbBridge(const AdbBridge&) = delete;
     AdbBridge& operator=(const AdbBridge&) = delete;
 
     bool Start();
     void SetNetworkUp(bool up);  // thread-safe
+    void SetServerUrl(const std::string& url);  // thread-safe, used from the next connection on
+    void RequestRescan();        // thread-safe: scan for phones now
     void SetStatusCallback(StatusCallback callback);
     AdbBridgeStatus GetStatus();
 
 private:
     static void BridgeTaskEntry(void* arg);
     static void WriterTaskEntry(void* arg);
+    static void ScanTaskEntry(void* arg);
     static void WsEventHandler(void* arg, const char* base, int32_t event_id, void* event_data);
 
     void BridgeTask();
     void WriterTask();
+    void ScanTask();
     bool OpenWebSocket();
+    std::string NegotiateHost(const Target& target, const std::vector<std::string>& candidates);
+    void SendCandidates(const std::vector<std::string>& candidates);
+    void HandleServerText(const std::string& msg);
+    std::vector<std::string> GetCandidates();
+    void DropCandidate(const std::string& host);
     void CloseWebSocket(int code, const char* reason);
     int ConnectPhone(const std::string& host);
     void RunSession(int sock);
     void EndSession();
-    void SendControl(const char* state, const std::string& detail = "");
+    void SendControl(const char* state, const std::string& host, const std::string& detail);
+    void SendText(const std::string& msg);
     void SetState(LinkState state);
     void DelayInterruptible(int ms);
 
     Config config_;
-    HostResolver resolver_;
+    std::string next_url_;  // SetServerUrl (guarded by status_mutex_)
+    std::atomic<int64_t> last_traffic_us_{0};  // last byte to/from the phone (scan waits for quiet)
+    TargetResolver resolver_;
+    PhoneScanner scanner_;
     StatusCallback status_callback_;
     std::mutex status_mutex_;
     AdbBridgeStatus status_;
@@ -108,6 +139,16 @@ private:
     SemaphoreHandle_t writer_mutex_ = nullptr;
     TaskHandle_t bridge_task_ = nullptr;
     TaskHandle_t writer_task_ = nullptr;
+    TaskHandle_t scan_task_ = nullptr;
+
+    std::mutex cand_mutex_;  // guards candidates_, scanned_, server_host_, current_host_
+    std::vector<std::string> candidates_;
+    bool scanned_ = false;      // a scan finished on this network
+    std::string server_host_;   // from {"type":"connect"}; "" = {"type":"idle"}
+    std::string current_host_;  // spliced right now
+    std::atomic<bool> scan_abort_{false};
+    std::atomic<bool> switch_requested_{false};
+    std::atomic<int> server_close_code_{0};
 
     esp_websocket_client* ws_ = nullptr;
     std::atomic<bool> accept_rx_{false};

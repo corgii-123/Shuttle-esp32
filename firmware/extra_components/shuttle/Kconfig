@@ -39,41 +39,56 @@ config SHUTTLE_SKIP_OTA_CHECK
 endmenu
 
 menu "Wi-Fi networks (priority order: 1 = highest)"
+    comment "Phones are found automatically: on every network the board scans for phones that ran 'adb tcpip 5555' (the hotspot phone, or phones on the same router) and the Mac picks one."
+    comment "PHONE_HOST: empty = automatic (recommended), an IP = only that phone, none = no ADB on this network."
 
 config SHUTTLE_WIFI1_SSID
-    string "Wi-Fi #1 SSID (phone hotspot recommended)"
+    string "Wi-Fi #1 SSID (e.g. home Wi-Fi)"
     default ""
 config SHUTTLE_WIFI1_PASSWORD
     string "Wi-Fi #1 password"
     default ""
 config SHUTTLE_WIFI1_PHONE_HOST
-    string "Wi-Fi #1 phone ADB host (empty = DHCP gateway)"
+    string "Wi-Fi #1 phone (empty = find automatically, IP = only that phone, none)"
     default ""
     help
-        Address of the Android phone on this network. Leave empty when this SSID
-        is the phone's own hotspot: the DHCP gateway is the phone.
+        Empty (recommended): scan this network for adbd (TCP 5555 answering an ADB CNXN) - finds the
+        hotspot phone (it is the gateway) as well as phones on a router, and any number of them;
+        the Mac chooses which one to use and can switch by voice ("换手机").
+        An IP/hostname: only ever use that phone (no scan).
+        "none": never run the ADB bridge on this network.
+config SHUTTLE_WIFI1_SERVER_URL
+    string "Wi-Fi #1 server URL (empty = the Server menu URL)"
+    default ""
+    help
+        Use another server address on this network, e.g. the Mac's LAN address
+        "ws://192.168.1.7:8780" at home: direct, instead of out to the Internet and back
+        through the tunnel (much faster and independent of the Internet route).
 
 config SHUTTLE_WIFI2_SSID
-    string "Wi-Fi #2 SSID (e.g. home Wi-Fi)"
+    string "Wi-Fi #2 SSID (e.g. phone hotspot)"
     default ""
 config SHUTTLE_WIFI2_PASSWORD
     string "Wi-Fi #2 password"
     default ""
 config SHUTTLE_WIFI2_PHONE_HOST
-    string "Wi-Fi #2 phone ADB host (empty = DHCP gateway)"
+    string "Wi-Fi #2 phone (empty = find automatically, IP = only that phone, none)"
     default ""
-    help
-        On a home router the gateway is NOT the phone: put the phone's (static or
-        DHCP-reserved) IP here, or "none" to disable the ADB bridge on this network.
+config SHUTTLE_WIFI2_SERVER_URL
+    string "Wi-Fi #2 server URL (empty = the Server menu URL)"
+    default ""
 
 config SHUTTLE_WIFI3_SSID
-    string "Wi-Fi #3 SSID"
+    string "Wi-Fi #3 SSID (e.g. office Wi-Fi)"
     default ""
 config SHUTTLE_WIFI3_PASSWORD
     string "Wi-Fi #3 password"
     default ""
 config SHUTTLE_WIFI3_PHONE_HOST
-    string "Wi-Fi #3 phone ADB host (empty = DHCP gateway)"
+    string "Wi-Fi #3 phone (empty = find automatically, IP = only that phone, none)"
+    default ""
+config SHUTTLE_WIFI3_SERVER_URL
+    string "Wi-Fi #3 server URL (empty = the Server menu URL)"
     default ""
 
 config SHUTTLE_WIFI_TIER_TIMEOUT_S
@@ -82,9 +97,14 @@ config SHUTTLE_WIFI_TIER_TIMEOUT_S
     default 20
 
 config SHUTTLE_WIFI_ROAM_INTERVAL_S
-    int "Re-try higher-priority networks every N seconds while idle (0 = never)"
+    int "Look for a higher-priority network after N s while idle (0 = never)"
     range 0 86400
     default 300
+    help
+        While connected to a lower-priority network (e.g. the hotspot after coming home) and
+        idle, the device briefly tries the higher-priority ones (about TIER_TIMEOUT seconds
+        offline). The interval doubles after each miss, up to 1 hour, and resets when the
+        network changes. Double-click BOOT to check immediately.
 
 endmenu
 
@@ -98,6 +118,30 @@ config SHUTTLE_ADB_PHONE_PORT
     int "Phone adbd TCP port (adb tcpip <port>)"
     range 1 65535
     default 5555
+
+config SHUTTLE_PHONE_SCAN_INTERVAL_S
+    int "Look for new phones every N s while one is in use (0 = only when none is)"
+    range 0 3600
+    default 300
+    help
+        A scan of the local /24 for adbd, so a phone that just ran 'adb tcpip 5555' appears
+        without touching the board ("换手机" scans at once). The phone in use is not probed
+        again, and a scan waits until ADB traffic has paused. Without a phone the board looks
+        every 15 s.
+
+config SHUTTLE_PHONE_SCAN_BATCH
+    int "Parallel connects while scanning"
+    range 1 16
+    default 8
+    help
+        Keep below the lwIP ARP table size (10) so pending ARP requests are not evicted.
+
+config SHUTTLE_PHONE_SCAN_TIMEOUT_MS
+    int "Connect timeout per scan batch (ms)"
+    range 100 5000
+    default 700
+    help
+        Phones in Wi-Fi power save may answer ARP late; raise this if a phone is missed.
 
 config SHUTTLE_ADB_RX_BUFFER_KB
     int "WebSocket->phone stream buffer (KB, allocated in PSRAM)"
@@ -127,6 +171,39 @@ config SHUTTLE_ADB_PING_INTERVAL_S
 config SHUTTLE_ADB_PONG_TIMEOUT_S
     int "WebSocket pong timeout before reconnect (s)"
     default 30
+
+endmenu
+
+menu "Push-to-talk"
+
+config SHUTTLE_PTT_TAIL_MS
+    int "Keep recording this long after the key is released (ms)"
+    range 0 1500
+    default 350
+    help
+        The last syllable is still in the microphone/AFE/encoder pipeline when the finger
+        lifts; stopping immediately cuts it off.
+
+endmenu
+
+menu "Debug"
+
+config SHUTTLE_DEBUG_SCREEN_DUMP
+    bool "Log every e-paper frame on the console (decode with tools/screen_dump.py)"
+    default n
+    help
+        After each display flush the 200x200 frame is logged as base64 1-bpp lines
+        ("SCRDUMP ..."), so the UI can be checked from the serial log without looking
+        at the panel. Costs ~7 KB of console output per refresh; leave off in use.
+
+config SHUTTLE_DEBUG_CONSOLE
+    bool "Command console on the USB port (tools/esp_console.py --fifo)"
+    default n
+    help
+        Accepts commands from the computer the board is plugged into: "ptt <ms>" (hold the
+        light-bulb key), "tap", "hold" (touch), "pwr", "dump" (screen), "stats" (task CPU),
+        "reboot", "help". For automated tests; leave off in use (anyone with the cable could
+        start the microphone). Needs the console on USB-Serial/JTAG (the board default).
 
 endmenu
 

@@ -5,6 +5,8 @@ firmware/main/boards/shuttle/epaper-1.54-v2/config.local.json
 # --- server ---
 server/config.yaml
 server/.venv/
+server/phone_helper/build/
+server/shuttle_server/phone_helper/*.jar
 .venv/
 __pycache__/
 *.pyc

@@ -111,11 +111,46 @@ class CommandTTS(TTS):
             return pcmlib.read_wav(out.read_bytes())
 
 
+class PitchShiftTTS(TTS):
+    """Another TTS one pitch higher/lower (tts.pitch_semitones), via ffmpeg: asetrate + atempo keep
+    the length and move the formants along, which is what makes an adult voice sound like a child."""
+
+    def __init__(self, inner: TTS, semitones: float):
+        self.inner = inner
+        self.factor = 2 ** (semitones / 12)
+        self.name = f"{inner.name}{semitones:+g}st"
+        if not shutil.which("ffmpeg"):
+            log.warning("tts.pitch_semitones needs ffmpeg (brew install ffmpeg): voice not shifted")
+
+    async def synthesize(self, text: str) -> tuple[bytes, int]:
+        pcm, rate = await self.inner.synthesize(text)
+        if not pcm or not shutil.which("ffmpeg"):
+            return pcm, rate
+        fmt = ["-f", "s16le", "-ar", str(rate), "-ac", "1"]
+        argv = ["ffmpeg", "-hide_banner", "-loglevel", "error", *fmt, "-i", "pipe:0",
+                "-af", f"asetrate={round(rate * self.factor)},aresample={rate},atempo={1 / self.factor:.5f}",
+                *fmt, "pipe:1"]
+        proc = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.PIPE,
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(pcm), 30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            log.warning("pitch shift timed out: original voice")
+            return pcm, rate
+        if proc.returncode != 0 or not out:
+            log.warning("pitch shift failed: %s", err.decode(errors="replace")[:200])
+            return pcm, rate
+        return out, rate
+
+
 def create_tts(cfg: TtsConfig, sample_rate: int) -> TTS:
     if cfg.provider == "mock":
-        return MockTTS(sample_rate)
-    if cfg.provider == "openai":
-        return OpenAiTTS(cfg.openai)
-    if cfg.provider == "command":
-        return CommandTTS(cfg.command)
-    return SayTTS(cfg.say, sample_rate)
+        tts: TTS = MockTTS(sample_rate)
+    elif cfg.provider == "openai":
+        tts = OpenAiTTS(cfg.openai)
+    elif cfg.provider == "command":
+        tts = CommandTTS(cfg.command)
+    else:
+        tts = SayTTS(cfg.say, sample_rate)
+    return PitchShiftTTS(tts, cfg.pitch_semitones) if cfg.pitch_semitones else tts

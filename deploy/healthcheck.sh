@@ -4,7 +4,7 @@
 #   deploy/healthcheck.sh https://shuttle.example.com   # check through Cloudflare from anywhere
 #   deploy/healthcheck.sh --restart           # (watchdog) restart the service after 3 failures
 set -u
-URL="${SHUTTLE_HEALTH_URL:-http://127.0.0.1:8765/health}"
+URL="${SHUTTLE_HEALTH_URL:-http://127.0.0.1:8780/health}"
 RESTART=0
 for a in "$@"; do
   case "$a" in

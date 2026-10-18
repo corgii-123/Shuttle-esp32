@@ -7,8 +7,10 @@
 //      portal (kept in NVS "shuttle"/"extra_ssids" so they survive tier attempts);
 //   2. at boot tries only the top-priority network for SHUTTLE_WIFI_TIER_TIMEOUT_S, then
 //      falls back to the full list;
-//   3. while connected to a lower-priority network and idle, periodically (every
-//      SHUTTLE_WIFI_ROAM_INTERVAL_S) retries the higher-priority ones.
+//   3. while connected to a lower-priority network and idle, retries the higher-priority ones
+//      (first after SHUTTLE_WIFI_ROAM_INTERVAL_S, then doubling up to 1 h while they stay
+//      absent) - e.g. hotspot -> home Wi-Fi when you get home;
+//   4. RequestBestNetwork() (BOOT double-click) does that check immediately.
 #pragma once
 
 #include <freertos/FreeRTOS.h>
@@ -39,6 +41,8 @@ public:
     bool HasNetworks();
     // Starts the background task that runs the tiered connect / roam-up logic.
     void Start(std::function<bool()> is_idle);
+    // Try higher-priority networks right now (or rescan when offline). Thread-safe.
+    void RequestBestNetwork();
     // Forward every WifiManager event here (from the board's event callback).
     void OnWifiEvent(WifiEvent event, const std::string& data);
     int PriorityOf(const std::string& ssid);

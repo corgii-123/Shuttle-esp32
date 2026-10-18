@@ -52,6 +52,7 @@ def make_config(tmp_path, **overrides):
         "agent": {"provider": "simple", "step_delay_s": 0.0},
         "tts": {"provider": "mock"},
         "voice": {"keepalive_s": 0.5},
+        "phones": {"state_file": str(tmp_path / "phones.json"), "rescan_wait_s": 2.0},
     }
     for section, values in overrides.items():
         raw.setdefault(section, {}).update(values)

@@ -6,6 +6,8 @@
 #include <sdkconfig.h>
 
 #include <cstring>
+#include <mutex>
+#include <string>
 
 #define TAG "ShuttleConfig"
 
@@ -59,6 +61,9 @@ void ProvisionNamespace(const char* ns, const char* key, const std::string& valu
     nvs_close(handle);
 }
 
+std::mutex g_network_mutex;
+std::string g_current_ssid;  // SetCurrentNetwork
+
 esp_netif_ip_info_t GetStaIpInfo(bool* ok) {
     esp_netif_ip_info_t info = {};
     *ok = false;
@@ -73,7 +78,7 @@ esp_netif_ip_info_t GetStaIpInfo(bool* ok) {
 
 std::vector<WifiNetwork> GetConfiguredNetworks() {
     std::vector<WifiNetwork> list;
-    auto add = [&list](const char* ssid, const char* password, const char* phone_host) {
+    auto add = [&list](const char* ssid, const char* password, const char* phone_host, const char* server_url) {
         if (ssid == nullptr || ssid[0] == '\0') {
             return;
         }
@@ -81,16 +86,39 @@ std::vector<WifiNetwork> GetConfiguredNetworks() {
         n.ssid = ssid;
         n.password = password ? password : "";
         n.phone_host = phone_host ? phone_host : "";
+        n.server_url = server_url ? server_url : "";
         n.priority = static_cast<int>(list.size());
         list.push_back(std::move(n));
     };
-    add(CONFIG_SHUTTLE_WIFI1_SSID, CONFIG_SHUTTLE_WIFI1_PASSWORD, CONFIG_SHUTTLE_WIFI1_PHONE_HOST);
-    add(CONFIG_SHUTTLE_WIFI2_SSID, CONFIG_SHUTTLE_WIFI2_PASSWORD, CONFIG_SHUTTLE_WIFI2_PHONE_HOST);
-    add(CONFIG_SHUTTLE_WIFI3_SSID, CONFIG_SHUTTLE_WIFI3_PASSWORD, CONFIG_SHUTTLE_WIFI3_PHONE_HOST);
+    add(CONFIG_SHUTTLE_WIFI1_SSID, CONFIG_SHUTTLE_WIFI1_PASSWORD, CONFIG_SHUTTLE_WIFI1_PHONE_HOST,
+        CONFIG_SHUTTLE_WIFI1_SERVER_URL);
+    add(CONFIG_SHUTTLE_WIFI2_SSID, CONFIG_SHUTTLE_WIFI2_PASSWORD, CONFIG_SHUTTLE_WIFI2_PHONE_HOST,
+        CONFIG_SHUTTLE_WIFI2_SERVER_URL);
+    add(CONFIG_SHUTTLE_WIFI3_SSID, CONFIG_SHUTTLE_WIFI3_PASSWORD, CONFIG_SHUTTLE_WIFI3_PHONE_HOST,
+        CONFIG_SHUTTLE_WIFI3_SERVER_URL);
     return list;
 }
 
-std::string GetServerBaseUrl() { return TrimTrailingSlash(CONFIG_SHUTTLE_SERVER_URL); }
+void SetCurrentNetwork(const std::string& ssid) {
+    std::lock_guard<std::mutex> lock(g_network_mutex);
+    g_current_ssid = ssid;
+}
+
+std::string GetServerBaseUrl() {
+    std::string ssid;
+    {
+        std::lock_guard<std::mutex> lock(g_network_mutex);
+        ssid = g_current_ssid;
+    }
+    if (!ssid.empty()) {
+        for (const auto& n : GetConfiguredNetworks()) {
+            if (n.ssid == ssid && !n.server_url.empty()) {
+                return TrimTrailingSlash(n.server_url);
+            }
+        }
+    }
+    return TrimTrailingSlash(CONFIG_SHUTTLE_SERVER_URL);
+}
 
 std::string GetToken() { return CONFIG_SHUTTLE_TOKEN; }
 
@@ -122,22 +150,89 @@ std::string GetStaIp() {
     return buf;
 }
 
-std::string ResolvePhoneHost(const std::string& ssid) {
+PhoneHostMode GetPhoneHostMode(const std::string& ssid) {
     for (const auto& n : GetConfiguredNetworks()) {
         if (n.ssid != ssid) {
             continue;
         }
         if (n.phone_host == "none") {
-            return "";
+            return PhoneHostMode::kDisabled;
         }
-        if (!n.phone_host.empty()) {
+        return n.phone_host.empty() ? PhoneHostMode::kAuto : PhoneHostMode::kFixed;
+    }
+    return PhoneHostMode::kAuto;
+}
+
+const char* PhoneHostModeName(PhoneHostMode mode) {
+    switch (mode) {
+        case PhoneHostMode::kAuto: return "auto(scan)";
+        case PhoneHostMode::kFixed: return "fixed";
+        case PhoneHostMode::kDisabled: return "disabled";
+    }
+    return "?";
+}
+
+std::string GetFixedPhoneHost(const std::string& ssid) {
+    for (const auto& n : GetConfiguredNetworks()) {
+        if (n.ssid == ssid && n.phone_host != "none") {
             return n.phone_host;
         }
-        break;
     }
-    // Unknown network (e.g. provisioned from the xiaozhi web portal) or empty
-    // phone_host: assume we are on the phone's hotspot -> phone is the gateway.
-    return GetStaGatewayIp();
+    return "";
+}
+
+bool GetStaIpv4(uint32_t* ip, uint32_t* netmask, uint32_t* gateway) {
+    bool ok = false;
+    auto info = GetStaIpInfo(&ok);
+    if (!ok) {
+        return false;
+    }
+    *ip = info.ip.addr;
+    *netmask = info.netmask.addr;
+    *gateway = info.gw.addr;
+    return true;
+}
+
+std::string Ipv4ToString(uint32_t addr) {
+    esp_ip4_addr_t a = {.addr = addr};
+    char buf[16];
+    esp_ip4addr_ntoa(&a, buf, sizeof(buf));
+    return buf;
+}
+
+std::string LoadLastPhone(const std::string& ssid) {
+    nvs_handle_t handle;
+    if (nvs_open("shuttle", NVS_READONLY, &handle) != ESP_OK) {
+        return "";
+    }
+    char buf[128];
+    size_t len = sizeof(buf);
+    std::string value;
+    if (nvs_get_str(handle, "last_phone", buf, &len) == ESP_OK) {
+        value = buf;
+    }
+    nvs_close(handle);
+    // stored as "<ssid>\t<host>"
+    auto tab = value.rfind('\t');
+    if (tab == std::string::npos || value.substr(0, tab) != ssid) {
+        return "";
+    }
+    return value.substr(tab + 1);
+}
+
+void SaveLastPhone(const std::string& ssid, const std::string& host) {
+    if (ssid.size() + host.size() + 2 > 128 || LoadLastPhone(ssid) == host) {
+        return;
+    }
+    nvs_handle_t handle;
+    if (nvs_open("shuttle", NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    if (NvsWriteStringIfChanged(handle, "last_phone", ssid + "\t" + host)) {
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "Last phone on '%s' = %s", ssid.c_str(), host.c_str());
+    }
+    nvs_close(handle);
 }
 
 void ProvisionXiaozhiSettings() {

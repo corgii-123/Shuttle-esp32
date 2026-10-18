@@ -285,4 +285,8 @@ def create_agent(cfg: AgentConfig) -> Agent:
         return CommandAgent(cfg.command.argv, cfg.command.cwd, cfg.timeout_s)
     if cfg.provider == "python":
         return load_python_agent(cfg.python.target, cfg.python.options)
+    if cfg.provider == "llm":
+        from .llm_agent import LlmAgent  # late import: llm_agent imports this module
+
+        return LlmAgent(cfg.llm)
     return SimpleAgent()
