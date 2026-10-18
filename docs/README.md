@@ -191,15 +191,15 @@ Only the Shuttle server (port 8780) goes through it; the model servers stay on 1
 ```bash
 brew install cloudflared
 cloudflared service install "$(cat ~/Downloads/.cf-tunnel-token)"   # LaunchAgent com.cloudflare.cloudflared
-chmod 600 ~/Library/LaunchAgents/com.cloudflare.cloudflared.plist      # it contains the token
+rm ~/Downloads/.cf-tunnel-token       # the service keeps its own copy (owner-only):
+                                      # ~/Library/Application Support/com.cloudflare.cloudflared/token
 grep "Registered tunnel connection" ~/Library/Logs/com.cloudflare.cloudflared.err.log
 curl https://shuttle.example.com/health                              # {"status": "ok"}
 ```
 
 Without `sudo` this is a login service like the Shuttle server and the local models (with
 `sudo` it would start at boot, but nothing behind it would). The token is the key of the tunnel:
-whoever has it can run a connector for your hostname; delete the downloaded copy, rotate it in
-the dashboard if it leaks.
+whoever has it can run a connector for your hostname; rotate it in the dashboard if it leaks.
 
 **Or locally managed** (`cloudflared tunnel login` / `create` / `route dns`, config file
 `deploy/cloudflared-config.example.yml`, `sudo cloudflared --config … service install`).
